@@ -1,0 +1,79 @@
+name: Sync Fork with Upstream
+
+on:
+  # 수동 실행
+  workflow_dispatch:
+  # 매일 자정에 자동 실행 (UTC 기준)
+  schedule:
+    - cron: '0 0 * * *'
+  # main 브랜치에 push될 때마다 실행
+  push:
+    branches:
+      - main
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout current repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Add upstream remote
+        run: |
+          # 기존 upstream이 있으면 제거
+          git remote remove upstream 2>/dev/null || true
+          # upstream 추가 (에러 발생 시 스킵)
+          git remote add upstream https://github.com/suhyeon10/linkers.git || {
+            echo "⚠️ Upstream 저장소를 찾을 수 없습니다. private 저장소이거나 존재하지 않을 수 있습니다."
+            echo "워크플로우를 종료합니다."
+            exit 0
+          }
+
+      - name: Fetch upstream changes
+        run: |
+          # upstream 저장소 접근 시도
+          if ! git fetch upstream 2>&1; then
+            echo "⚠️ Upstream 저장소에 접근할 수 없습니다."
+            echo "가능한 원인:"
+            echo "  - 저장소가 private이고 접근 권한이 없음"
+            echo "  - 저장소가 존재하지 않음"
+            echo "  - 네트워크 오류"
+            echo "워크플로우를 종료합니다."
+            exit 0
+          fi
+
+      - name: Check if main branch exists
+        id: check-main
+        run: |
+          if git show-ref --verify --quiet refs/heads/main; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Merge upstream/main into origin/main
+        run: |
+          git checkout main
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          
+          # upstream/main의 변경사항을 가져옴
+          git merge upstream/main --no-edit || {
+            echo "Merge conflict detected. Attempting to resolve..."
+            # 충돌 발생 시 현재 브랜치의 변경사항을 우선
+            git checkout --ours .
+            git add .
+            git commit -m "chore: sync with upstream (resolve conflicts)" || true
+          }
+          
+          # 변경사항이 있으면 푸시
+          if [ -n "$(git status --porcelain)" ]; then
+            git push origin main
+          else
+            echo "No changes to push"
+          fi
+

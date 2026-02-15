@@ -1,0 +1,2342 @@
+/**
+ * 법률 RAG API 서비스
+ * 백엔드 법률 분석 API와 통신
+ */
+
+const BACKEND_API_URL = process.env.NEXT_PUBLIC_BACKEND_API_URL || 'http://localhost:8000';
+const LEGAL_API_BASE = `${BACKEND_API_URL}/api/v1/legal`;
+const LEGAL_API_BASE_V2 = `${BACKEND_API_URL}/api/v2/legal`;
+
+export interface LegalCasePreview {
+  id: string;
+  title: string;
+  situation: string;
+  main_issues: string[];
+}
+
+export interface LegalIssue {
+  name: string;
+  description: string;
+  severity: 'low' | 'medium' | 'high';
+  legal_basis: string[];
+}
+
+export interface LegalRecommendation {
+  title: string;
+  description: string;
+  steps: string[];
+}
+
+export interface LegalGroundingChunk {
+  source_id: string;
+  source_type: 'law' | 'manual' | 'case';
+  title: string;
+  snippet: string;
+  score: number;
+}
+
+export interface LegalAnalysisResult {
+  risk_score: number;
+  risk_level: 'low' | 'medium' | 'high';
+  summary: string;
+  issues: LegalIssue[];
+  recommendations: LegalRecommendation[];
+  grounding: LegalGroundingChunk[];
+}
+
+export interface LegalSearchResponse {
+  query: string;
+  cases: LegalCasePreview[];
+}
+
+/**
+ * 케이스 검색
+ */
+export const searchLegalCases = async (
+  query: string,
+  limit: number = 5
+): Promise<LegalCasePreview[]> => {
+  try {
+    const url = `${LEGAL_API_BASE}/search-cases`;
+    const params = new URLSearchParams({
+      query,
+      limit: limit.toString(),
+    });
+
+    const response = await fetch(`${url}?${params}`, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`케이스 검색 실패: ${response.status} - ${errorText}`);
+    }
+
+    const data: LegalSearchResponse = await response.json();
+    return data.cases;
+  } catch (error) {
+    console.error('케이스 검색 오류:', error);
+    throw error;
+  }
+};
+
+/**
+ * 상황 분석 (레거시 - 간단한 텍스트만)
+ */
+export const analyzeLegalSituation = async (
+  text: string
+): Promise<LegalAnalysisResult> => {
+  try {
+    const url = `${LEGAL_API_BASE}/analyze-situation`;
+    
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ text }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`상황 분석 실패: ${response.status} - ${errorText}`);
+    }
+
+    const data: LegalAnalysisResult = await response.json();
+    return data;
+  } catch (error) {
+    console.error('상황 분석 오류:', error);
+    throw error;
+  }
+};
+
+/**
+ * 상황 기반 진단 (상세 정보 포함)
+ */
+export const analyzeSituationDetailed = async (
+  request: import('@/types/legal').SituationAnalysisRequest
+): Promise<import('@/types/legal').SituationAnalysisResponse> => {
+  try {
+    const url = `${LEGAL_API_BASE}/situation/analyze`;
+    
+    // 프론트엔드 camelCase를 백엔드 snake_case로 변환
+    const backendRequest = {
+      category_hint: request.categoryHint,
+      situation_text: request.situationText, // summary + details를 합친 텍스트
+      ...(request.summary && { summary: request.summary }),
+      ...(request.details && { details: request.details }),
+      ...(request.employmentType && { employment_type: request.employmentType }),
+      ...(request.workPeriod && { work_period: request.workPeriod }),
+      ...(request.weeklyHours && { weekly_hours: request.weeklyHours }),
+      ...(request.isProbation !== undefined && { is_probation: request.isProbation }),
+      ...(request.socialInsurance && { social_insurance: request.socialInsurance }),
+    };
+    
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(backendRequest),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`상황 진단 실패: ${response.status} - ${errorText}`);
+    }
+
+    const backendData: any = await response.json();
+    
+    // 백엔드 snake_case를 프론트엔드 camelCase로 변환
+    const data: import('@/types/legal').SituationAnalysisResponse = {
+      classifiedType: backendData.classified_type,
+      riskScore: backendData.risk_score,
+      summary: backendData.summary,
+      actionPlan: {
+        steps: (backendData.action_plan?.steps || []).map((step: any) => ({
+          title: step.title,
+          items: step.items || [],
+        })),
+      },
+      scripts: {
+        toCompany: backendData.scripts?.to_company 
+          ? (typeof backendData.scripts.to_company === 'string' 
+            ? { subject: '근로계약 관련 확인 요청', body: backendData.scripts.to_company }
+            : backendData.scripts.to_company)
+          : undefined,
+        toAdvisor: backendData.scripts?.to_advisor
+          ? (typeof backendData.scripts.to_advisor === 'string'
+            ? { subject: '노무 상담 요청', body: backendData.scripts.to_advisor }
+            : backendData.scripts.to_advisor)
+          : undefined,
+      },
+      relatedCases: (backendData.related_cases || []).map((caseItem: any) => {
+        // 새 구조 (documentTitle, fileUrl, sourceType, externalId, overallSimilarity, summary, snippets)
+        if (caseItem.documentTitle && caseItem.snippets) {
+          return {
+            documentTitle: caseItem.documentTitle,
+            fileUrl: caseItem.fileUrl,
+            sourceType: caseItem.sourceType || 'law',
+            externalId: caseItem.externalId || '',
+            overallSimilarity: caseItem.overallSimilarity || 0,
+            summary: caseItem.summary || '',
+            snippets: (caseItem.snippets || []).map((snippet: any) => ({
+              snippet: snippet.snippet || '',
+              similarityScore: snippet.similarityScore || 0,
+              usageReason: snippet.usageReason || '',
+            })),
+          };
+        }
+        // 레거시 구조 (id, title, summary) - 하위 호환성
+        return {
+          documentTitle: caseItem.title || caseItem.documentTitle || '',
+          fileUrl: caseItem.fileUrl || caseItem.file_url,
+          sourceType: caseItem.sourceType || 'law',
+          externalId: caseItem.externalId || caseItem.external_id || caseItem.id || '',
+          overallSimilarity: caseItem.overallSimilarity || 0,
+          summary: caseItem.summary || '',
+          snippets: [{
+            snippet: caseItem.summary || '',
+            similarityScore: 0,
+            usageReason: '',
+          }],
+        };
+      }),
+      sources: (backendData.sources || []).map((source: any) => ({
+        sourceId: source.source_id || source.sourceId,
+        sourceType: (source.source_type || source.sourceType || 'law') as 'law' | 'manual' | 'case' | 'standard_contract',
+        title: source.title,
+        snippet: source.snippet,
+        score: source.score,
+        externalId: source.externalId || source.external_id,
+        fileUrl: source.fileUrl || source.file_url,
+      })),
+    };
+    
+    return data;
+  } catch (error) {
+    console.error('상황 진단 오류:', error);
+    throw error;
+  }
+};
+
+/**
+ * 계약서 분석
+ */
+export const analyzeContract = async (
+  file: File,
+  description?: string
+): Promise<LegalAnalysisResult> => {
+  try {
+    const url = `${LEGAL_API_BASE}/analyze-contract`;
+    
+    const formData = new FormData();
+    formData.append('file', file);
+    if (description) {
+      formData.append('description', description);
+    }
+
+    const response = await fetch(url, {
+      method: 'POST',
+      body: formData,
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`계약서 분석 실패: ${response.status} - ${errorText}`);
+    }
+
+    const data: LegalAnalysisResult = await response.json();
+    return data;
+  } catch (error) {
+    console.error('계약서 분석 오류:', error);
+    throw error;
+  }
+};
+
+// ========== v2 API (가이드 스펙) ==========
+
+export interface LegalSearchResultV2 {
+  legal_document_id: string;
+  section_title?: string;
+  text: string;
+  score: number;
+  source?: string;
+  doc_type?: string;
+  title?: string;
+}
+
+export interface LegalSearchResponseV2 {
+  results: LegalSearchResultV2[];
+  count: number;
+  query: string;
+}
+
+export interface SituationRequestV2 {
+  situation: string;
+  category?: string;
+  employmentType?: string;
+  companySize?: string;
+  workPeriod?: string;
+  hasWrittenContract?: boolean;
+  socialInsurance?: string[];
+}
+
+export interface LegalBasisItemV2 {
+  title: string;
+  snippet: string;
+  sourceType?: string;
+  // 백엔드에서 status(violation/likely 등)를 내려줄 수 있으므로 여유 있게 string 허용
+  status?: string;
+  filePath?: string; // 원본 파일 경로
+}
+
+export interface SituationAnalysisV2 {
+  summary: string;
+  legalBasis: LegalBasisItemV2[];
+  recommendations: string[];
+}
+
+export interface RelatedCaseSnippetV2 {
+  snippet: string;  // 벡터 검색에서 가져온 원문 일부(청크 텍스트)
+  similarityScore: number;  // 이 청크가 현재 상황/질문과 얼마나 유사한지 점수
+  usageReason: string;  // 왜 이 청크를 근거로 사용했는지의 설명
+}
+
+export interface RelatedCaseV2 {
+  documentTitle: string;  // 해당 문서의 파일명 또는 제목
+  fileUrl?: string;  // Supabase Storage 등에 저장된 원문 파일 다운로드/뷰어 URL
+  sourceType: string;  // 문서 유형 구분값 (예: standard_contract, labor_law, case_law)
+  externalId: string;  // 백엔드/DB에서 이 문서를 식별하는 키
+  overallSimilarity: number;  // 이 문서가 이번 상황분석과 전반적으로 얼마나 관련 있는지 나타내는 대표 점수
+  summary: string;  // 이 문서가 어떤 문서인지 한 줄로 설명하는 짧은 요약
+  snippets: RelatedCaseSnippetV2[];  // 이 문서에서 이번 분석에 실제로 사용된 청크 목록
+}
+
+export interface EmailTemplateV2 {
+  subject: string;  // 이메일 제목
+  body: string;     // 이메일 본문 (마크다운 또는 일반 텍스트)
+}
+
+export interface ScriptsV2 {
+  toCompany?: EmailTemplateV2;  // 회사에 보낼 이메일 템플릿
+  toAdvisor?: EmailTemplateV2;  // 노무사/기관에 보낼 이메일 템플릿
+}
+
+export interface SourceItemV2 {
+  sourceId: string;
+  sourceType: 'law' | 'manual' | 'case' | 'standard_contract';
+  title: string;
+  snippet: string;
+  score: number;
+  externalId?: string; // 파일 ID (스토리지 경로 생성용)
+  fileUrl?: string; // 스토리지 Signed URL (파일 다운로드용)
+}
+
+export interface CriteriaItemV2 {
+  documentTitle: string; // 문서 제목
+  fileUrl?: string | null; // 문서 파일 URL (Signed URL)
+  sourceType: string; // 출처 타입 (law, manual, case, standard_contract)
+  similarityScore: number; // 유사도 점수 (0.0 ~ 1.0)
+  snippet: string; // 관련 내용 스니펫
+  usageReason: string; // 사용 이유 설명
+}
+
+export interface SituationResponseV2 {
+  id?: string;  // situation_analyses 테이블의 ID
+  riskScore: number;
+  riskLevel: 'low' | 'medium' | 'high';
+  tags: string[];
+  analysis?: SituationAnalysisV2;
+  checklist: string[];
+  scripts?: ScriptsV2;
+  relatedCases: RelatedCaseV2[];
+  sources?: SourceItemV2[]; // RAG 검색 출처
+  findings?: any[]; // 법적 판단 기준 (findings API 구조, 백엔드에서 최상위 레벨에 반환)
+  criteria?: CriteriaItemV2[]; // 레거시 호환성 (더 이상 사용하지 않음)
+  actionPlan?: {
+    steps: Array<{
+      title: string;
+      items: string[];
+    }>;
+  }; // 행동 계획 (백엔드에서 최상위 레벨에 반환)
+  organizations?: Array<{
+    id: string;
+    name: string;
+    description: string;
+    capabilities: string[];
+    requiredDocs: string[];
+    legalBasis?: string;
+    website?: string;
+    phone?: string;
+  }>; // 추천 기관 목록
+}
+
+export interface ContractIssueV2 {
+  id: string;
+  category: string;
+  severity: 'low' | 'medium' | 'high';
+  summary: string;
+  originalText: string;
+  legalBasis: string[];
+  explanation: string;
+  suggestedRevision: string;
+  clauseId?: string;  // 연결된 조항 ID
+  startIndex?: number;  // 원문에서 시작 위치
+  endIndex?: number;  // 원문에서 종료 위치
+  toxicClauseDetail?: ToxicClauseDetail;  // 독소조항 상세 정보
+}
+
+export interface ClauseV2 {
+  id: string;
+  title: string;  // "제1조 (목적)"
+  content: string;
+  articleNumber?: number;
+  startIndex: number;
+  endIndex: number;
+  category?: string;
+}
+
+export interface HighlightedTextV2 {
+  text: string;
+  startIndex: number;
+  endIndex: number;
+  severity: 'low' | 'medium' | 'high';
+  issueId: string;
+}
+
+// 독소조항 관련 타입 추가
+export interface ToxicClauseDetail {
+  clauseLocation: string;
+  contentSummary: string;
+  whyRisky: string;
+  realWorldProblems: string;
+  suggestedRevisionLight: string;
+  suggestedRevisionFormal: string;
+}
+
+export interface RiskSummaryItem {
+  item: string;
+  riskLevel: 'low' | 'medium' | 'high';
+  problemPoint: string;
+  simpleExplanation: string;
+  revisionKeyword: string;
+}
+
+// v2 API용 별칭 (호환성)
+export type RiskSummaryItemV2 = RiskSummaryItem;
+
+export interface ContractAnalysisResponseV2 {
+  docId: string;
+  title: string;
+  riskScore: number;
+  riskLevel: 'low' | 'medium' | 'high';
+  sections: {
+    working_hours?: number;
+    wage?: number;
+    probation_termination?: number;
+    stock_option_ip?: number;
+  };
+  issues: ContractIssueV2[];
+  summary: string;
+  retrievedContexts: Array<{
+    sourceType: string;
+    title: string;
+    snippet: string;
+  }>;
+  contractText?: string;  // 계약서 원문 텍스트
+  clauses?: ClauseV2[];  // 조항 목록 (자동 분류)
+  highlightedTexts?: HighlightedTextV2[];  // 하이라이트된 텍스트
+  createdAt: string;
+  fileUrl?: string;  // Supabase Storage에 저장된 원본 파일 URL
+  // 새로운 독소조항 탐지 필드
+  oneLineSummary?: string;  // 한 줄 총평
+  riskTrafficLight?: string;  // 리스크 신호등: 🟢 | 🟡 | 🔴
+  top3ActionPoints?: string[];  // 지금 당장 확인하거나 물어봐야 할 포인트 3개
+  riskSummaryTable?: RiskSummaryItem[];  // 리스크 요약 테이블
+  toxicClauses?: ToxicClauseDetail[];  // 독소조항 상세 목록
+  negotiationQuestions?: string[];  // 협상 시 질문 리스트
+}
+
+export interface ContractComparisonRequestV2 {
+  oldContractId: string;
+  newContractId: string;
+}
+
+export interface ContractComparisonResponseV2 {
+  oldContract: ContractAnalysisResponseV2;
+  newContract: ContractAnalysisResponseV2;
+  changedClauses: Array<{
+    type: 'added' | 'removed' | 'modified';
+    clauseId: string;
+    title: string;
+    content?: string;
+    oldContent?: string;
+    newContent?: string;
+  }>;
+  riskChange: {
+    oldRiskScore: number;
+    newRiskScore: number;
+    oldRiskLevel: string;
+    newRiskLevel: string;
+    riskScoreDelta: number;
+  };
+  summary: string;
+}
+
+export interface ClauseRewriteRequestV2 {
+  clauseId: string;
+  originalText: string;
+  issueId?: string;
+}
+
+export interface ClauseRewriteResponseV2 {
+  originalText: string;
+  rewrittenText: string;
+  explanation: string;
+  legalBasis: string[];
+}
+
+/**
+ * 법령/케이스 검색 (v2)
+ */
+export const searchLegalV2 = async (
+  query: string,
+  limit: number = 5,
+  docType?: string
+): Promise<LegalSearchResponseV2> => {
+  try {
+    const url = `${LEGAL_API_BASE_V2}/search`;
+    const params = new URLSearchParams({
+      q: query,
+      limit: limit.toString(),
+    });
+    if (docType) {
+      params.append('doc_type', docType);
+    }
+
+    // 인증 헤더 가져오기 (선택적 - 검색은 인증 없이도 가능)
+    const authHeaders = await getAuthHeaders();
+    const headers = {
+      ...(authHeaders as Record<string, string>),
+      'Content-Type': 'application/json',
+    };
+
+    const response = await fetch(`${url}?${params}`, {
+      method: 'GET',
+      headers,
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`법령 검색 실패: ${response.status} - ${errorText}`);
+    }
+
+    const data: LegalSearchResponseV2 = await response.json();
+    return data;
+  } catch (error) {
+    console.error('법령 검색 오류:', error);
+    throw error;
+  }
+};
+
+/**
+ * 사용자 ID 가져오기 (Supabase)
+ */
+const getUserId = async (): Promise<string | null> => {
+  try {
+    const { createSupabaseBrowserClient } = await import('@/supabase/supabase-client');
+    const supabase = createSupabaseBrowserClient();
+    const { data: { user } } = await supabase.auth.getUser();
+    return user?.id || null;
+  } catch (error) {
+    console.warn('사용자 ID 가져오기 실패:', error);
+    return null;
+  }
+};
+
+/**
+ * 인증 헤더 가져오기 (Supabase 액세스 토큰)
+ */
+export const getAuthHeaders = async (): Promise<HeadersInit> => {
+  const headers: HeadersInit = {};
+  
+  try {
+    const { createSupabaseBrowserClient } = await import('@/supabase/supabase-client');
+    const supabase = createSupabaseBrowserClient();
+    const { data: { session } } = await supabase.auth.getSession();
+    
+    if (session?.access_token) {
+      headers['Authorization'] = `Bearer ${session.access_token}`;
+    }
+    
+    // user_id도 함께 추가
+    const userId = await getUserId();
+    if (userId) {
+      headers['X-User-Id'] = userId;
+    }
+  } catch (error) {
+    console.warn('인증 헤더 가져오기 실패:', error);
+  }
+  
+  return headers;
+};
+
+/**
+ * 계약서 분석 (v2)
+ */
+export const analyzeContractV2 = async (
+  file: File,
+  title?: string,
+  docType?: string,
+  userId?: string | null,
+  contractType?: 'freelancer' | 'part_time' | 'regular' | 'service' | 'other',
+  userRole?: 'worker' | 'employer',
+  field?: 'it_dev' | 'design' | 'marketing' | 'other',
+  concerns?: string
+): Promise<ContractAnalysisResponseV2> => {
+  try {
+    const url = `${LEGAL_API_BASE_V2}/analyze-contract`;
+    
+    const formData = new FormData();
+    formData.append('file', file);
+    if (title) {
+      formData.append('title', title);
+    }
+    if (docType) {
+      formData.append('doc_type', docType);
+    }
+    if (contractType) {
+      formData.append('contract_type', contractType);
+    }
+    if (userRole) {
+      formData.append('user_role', userRole);
+    }
+    if (field) {
+      formData.append('field', field);
+    }
+    if (concerns) {
+      formData.append('concerns', concerns);
+    }
+
+    // 인증 헤더 가져오기 (Authorization + X-User-Id)
+    const authHeaders = await getAuthHeaders();
+    
+    // user_id가 명시적으로 제공된 경우 덮어쓰기
+    const headersForFormData: Record<string, string> = {
+      ...(authHeaders as Record<string, string>),
+    };
+    if (userId !== undefined && userId !== null) {
+      headersForFormData['X-User-Id'] = userId;
+    }
+
+    // FormData 전송 시 Content-Type은 브라우저가 자동으로 설정하므로 제거
+    // (multipart/form-data boundary는 브라우저가 자동 생성)
+    delete headersForFormData['Content-Type'];
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: headersForFormData,
+      body: formData,
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('[계약서 분석] API 에러:', response.status, errorText);
+      throw new Error(`계약서 분석 실패: ${response.status} - ${errorText}`);
+    }
+
+    const data: ContractAnalysisResponseV2 = await response.json();
+    
+    // 응답 검증
+    if (!data || typeof data !== 'object') {
+      console.error('[계약서 분석] 잘못된 응답 형식:', data);
+      throw new Error('서버에서 잘못된 형식의 응답을 받았습니다.');
+    }
+    
+    // 📋 백엔드 응답 전체를 JSON으로 출력 (브라우저에서 펼쳐서 볼 수 있음)
+    console.group('📋 [계약서 분석] 백엔드 API 응답 전체');
+    console.log('전체 응답 객체:', data);
+    console.log('JSON 문자열:', JSON.stringify(data, null, 2));
+    console.log('응답 키 목록:', Object.keys(data));
+    console.groupEnd();
+    
+    // contractText 확인
+    const hasContractText = !!(data.contractText && data.contractText.trim().length > 0);
+    console.log('🔍 [계약서 분석] API 응답 요약:', {
+      docId: data.docId,
+      hasContractText,
+      contractTextLength: data.contractText?.length || 0,
+      contractTextPreview: data.contractText?.substring(0, 200) || '(없음)',
+      riskScore: data.riskScore,
+      riskLevel: data.riskLevel,
+      issuesCount: data.issues?.length || 0,
+      hasSummary: !!data.summary,
+      summaryPreview: data.summary?.substring(0, 100) || '(없음)',
+      responseKeys: Object.keys(data)
+    });
+    
+    if (!hasContractText) {
+      console.warn('⚠️ [계약서 분석] API 응답에 contractText가 없습니다!', {
+        docId: data.docId,
+        responseKeys: Object.keys(data),
+        contractText: data.contractText,
+        contractTextType: typeof data.contractText,
+        contractTextIsEmpty: data.contractText === '' || data.contractText === null || data.contractText === undefined
+      });
+    }
+    
+    if (!data.docId) {
+      console.warn('[계약서 분석] docId가 응답에 없음:', data);
+      // docId가 없으면 임시 ID 생성
+      data.docId = `temp-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    }
+    
+    return data;
+  } catch (error) {
+    console.error('계약서 분석 오류:', error);
+    throw error;
+  }
+};
+
+/**
+ * 계약서 비교 (v2)
+ */
+export const compareContractsV2 = async (
+  oldContractId: string,
+  newContractId: string
+): Promise<ContractComparisonResponseV2> => {
+  try {
+    const url = `${LEGAL_API_BASE_V2}/compare-contracts`
+    const authHeaders = await getAuthHeaders()
+    
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        ...authHeaders,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        oldContractId,
+        newContractId,
+      }),
+    })
+    
+    if (!response.ok) {
+      const errorText = await response.text()
+      throw new Error(`계약서 비교 실패: ${response.status} - ${errorText}`)
+    }
+    
+    return await response.json()
+  } catch (error) {
+    console.error('계약서 비교 오류:', error)
+    throw error
+  }
+}
+
+/**
+ * 조항 리라이트 (v2)
+ */
+export const rewriteClauseV2 = async (
+  clauseId: string,
+  originalText: string,
+  issueId?: string,
+  legalBasis?: string[]
+): Promise<ClauseRewriteResponseV2> => {
+  try {
+    const url = `${LEGAL_API_BASE_V2}/rewrite-clause`
+    const authHeaders = await getAuthHeaders()
+    
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        ...authHeaders,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        clauseId,
+        originalText,
+        issueId,
+        legalBasis: legalBasis || undefined,
+      }),
+    })
+    
+    if (!response.ok) {
+      const errorText = await response.text()
+      throw new Error(`조항 리라이트 실패: ${response.status} - ${errorText}`)
+    }
+    
+    return await response.json()
+  } catch (error) {
+    console.error('조항 리라이트 오류:', error)
+    throw error
+  }
+}
+
+/**
+ * 계약서 상세 조회 (v2)
+ */
+export const getContractAnalysisV2 = async (
+  docId: string
+): Promise<ContractAnalysisResponseV2> => {
+  try {
+    const url = `${LEGAL_API_BASE_V2}/contracts/${docId}`;
+
+    // 인증 헤더 가져오기
+    const authHeaders = await getAuthHeaders();
+    const headers = {
+      ...(authHeaders as Record<string, string>),
+      'Content-Type': 'application/json',
+    };
+
+    const response = await fetch(url, {
+      method: 'GET',
+      headers,
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`계약서 조회 실패: ${response.status} - ${errorText}`);
+    }
+
+    const data: ContractAnalysisResponseV2 = await response.json();
+    return data;
+  } catch (error) {
+    console.error('계약서 조회 오류:', error);
+    throw error;
+  }
+};
+
+/**
+ * 상황별 법률 분석 (v2)
+ */
+export const analyzeSituationV2 = async (
+  request: SituationRequestV2,
+  userId?: string | null
+): Promise<SituationResponseV2> => {
+  try {
+    const url = `${LEGAL_API_BASE_V2}/analyze-situation`;
+    
+    // 인증 헤더 가져오기 (Authorization + X-User-Id)
+    const authHeaders = await getAuthHeaders();
+    const headers: Record<string, string> = {
+      ...(authHeaders as Record<string, string>),
+      'Content-Type': 'application/json',
+    };
+    
+    // user_id가 명시적으로 제공된 경우 덮어쓰기
+    if (userId !== undefined && userId !== null) {
+      headers['X-User-Id'] = userId;
+    }
+    
+    const response = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(request),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`상황 분석 실패: ${response.status} - ${errorText}`);
+    }
+
+    const data: SituationResponseV2 = await response.json();
+    return data;
+  } catch (error) {
+    console.error('상황 분석 오류:', error);
+    throw error;
+  }
+};
+
+/**
+ * 사용자별 계약서 분석 히스토리 조회 (v2)
+ */
+export const getContractHistoryV2 = async (
+  limit: number = 20,
+  offset: number = 0,
+  userId?: string | null
+): Promise<Array<{
+  id: string;
+  doc_id: string;
+  title: string;
+  original_filename: string;
+  risk_score: number;
+  risk_level: string;
+  summary: string;
+  created_at: string;
+  issue_count: number;
+}>> => {
+  try {
+    const url = `${LEGAL_API_BASE_V2}/contracts/history`;
+    
+    // 인증 헤더 가져오기 (Authorization + X-User-Id)
+    const authHeaders = await getAuthHeaders();
+    const headers: Record<string, string> = {
+      ...(authHeaders as Record<string, string>),
+      'Content-Type': 'application/json',
+    };
+    
+    // user_id가 명시적으로 제공된 경우 덮어쓰기
+    if (userId !== undefined && userId !== null) {
+      headers['X-User-Id'] = userId;
+    }
+    
+    // user_id가 없으면 빈 배열 반환 (에러 대신)
+    if (!headers['X-User-Id']) {
+      console.warn('사용자 ID가 없어 히스토리를 조회할 수 없습니다. 로컬 스토리지를 확인하세요.');
+      return [];
+    }
+    
+    const params = new URLSearchParams({
+      limit: limit.toString(),
+      offset: offset.toString(),
+    });
+
+    const response = await fetch(`${url}?${params}`, {
+      method: 'GET',
+      headers,
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`히스토리 조회 실패: ${response.status} - ${errorText}`);
+    }
+
+    const data = await response.json();
+    return data;
+  } catch (error) {
+    console.error('히스토리 조회 오류:', error);
+    throw error;
+  }
+};
+
+/**
+ * 사용자별 상황 분석 히스토리 조회 (v2)
+ */
+export const getSituationHistoryV2 = async (
+  limit: number = 20,
+  offset: number = 0,
+  userId?: string | null
+): Promise<Array<{
+  id: string;
+  situation: string;
+  category: string;
+  risk_score: number;
+  risk_level: string;
+  summary: string;
+  created_at: string;
+}>> => {
+  try {
+    const url = `${LEGAL_API_BASE_V2}/situations/history`;
+    
+    const authHeaders = await getAuthHeaders();
+    const headers: Record<string, string> = {
+      ...(authHeaders as Record<string, string>),
+      'Content-Type': 'application/json',
+    };
+    
+    if (userId !== undefined && userId !== null) {
+      headers['X-User-Id'] = userId;
+    }
+    
+    if (!headers['X-User-Id']) {
+      console.warn('사용자 ID가 없어 히스토리를 조회할 수 없습니다.');
+      return [];
+    }
+    
+    const params = new URLSearchParams({
+      limit: limit.toString(),
+      offset: offset.toString(),
+    });
+
+    const response = await fetch(`${url}?${params}`, {
+      method: 'GET',
+      headers,
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`히스토리 조회 실패: ${response.status} - ${errorText}`);
+    }
+
+    const data = await response.json();
+    return data;
+  } catch (error) {
+    console.error('히스토리 조회 오류:', error);
+    throw error;
+  }
+};
+
+/**
+ * 특정 상황 분석 결과 조회 (v2)
+ */
+export const getSituationAnalysisByIdV2 = async (
+  situationId: string,
+  userId?: string | null
+): Promise<SituationResponseV2> => {
+  try {
+    const url = `${LEGAL_API_BASE_V2}/situations/${situationId}`;
+    
+    const authHeaders = await getAuthHeaders();
+    const headers: Record<string, string> = {
+      ...(authHeaders as Record<string, string>),
+      'Content-Type': 'application/json',
+    };
+    
+    if (userId !== undefined && userId !== null) {
+      headers['X-User-Id'] = userId;
+    }
+
+    const response = await fetch(url, {
+      method: 'GET',
+      headers,
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`분석 결과 조회 실패: ${response.status} - ${errorText}`);
+    }
+
+    const data: SituationResponseV2 = await response.json();
+    return data;
+  } catch (error) {
+    console.error('분석 결과 조회 오류:', error);
+    throw error;
+  }
+};
+
+// 레거시 API 함수 제거됨 - 새 테이블 구조(legal_chat_sessions, legal_chat_messages) 사용
+
+/**
+ * 법률 상담 챗 (v2) - Dual RAG 지원
+ */
+export interface LegalChatRequestV2 {
+  query: string
+  docIds: string[]
+  selectedIssueId?: string
+  selectedIssue?: {
+    category?: string
+    summary?: string
+    severity?: string
+    originalText?: string
+    legalBasis?: LegalBasisItemV2[]  // string[]에서 LegalBasisItemV2[]로 변경
+  }
+  analysisSummary?: string
+  riskScore?: number
+  totalIssues?: number
+  topK?: number
+  // 🔥 컨텍스트 타입 및 ID 추가
+  contextType?: 'none' | 'situation' | 'contract'
+  contextId?: string | null
+}
+
+export interface LegalChatResponseV2 {
+  answer: string
+  markdown?: string
+  query: string
+  usedChunks?: {
+    contract: Array<{
+      id?: string
+      source_type?: string
+      title?: string
+      content?: string
+      score?: number
+    }>
+    legal: Array<{
+      id?: string
+      source_type?: string
+      title?: string
+      content?: string
+      score?: number
+    }>
+  }
+}
+
+export const chatWithContractV2 = async (
+  request: LegalChatRequestV2
+): Promise<LegalChatResponseV2> => {
+  try {
+    const url = `${LEGAL_API_BASE_V2}/chat`
+    
+    // 인증 헤더 가져오기
+    const authHeaders = await getAuthHeaders()
+    const headers = {
+      ...(authHeaders as Record<string, string>),
+      'Content-Type': 'application/json',
+    }
+    
+    const response = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(request),
+    })
+
+    if (!response.ok) {
+      const errorText = await response.text()
+      throw new Error(`법률 상담 챗 실패: ${response.status} - ${errorText}`)
+    }
+
+    const data: LegalChatResponseV2 = await response.json()
+    return data
+  } catch (error) {
+    console.error('법률 상담 챗 오류:', error)
+    throw error
+  }
+}
+
+/**
+ * 헬스 체크 (v2)
+ */
+export const healthCheckV2 = async (): Promise<{ status: string; message: string }> => {
+  try {
+    const url = `${LEGAL_API_BASE_V2}/health`;
+
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`헬스 체크 실패: ${response.status} - ${errorText}`);
+    }
+
+    const data = await response.json();
+    return data;
+  } catch (error) {
+    console.error('헬스 체크 오류:', error);
+    throw error;
+  }
+};
+
+// ============================================================================
+// 새로운 통합 챗 시스템 API (legal_chat_sessions, legal_chat_messages)
+// ============================================================================
+
+export interface ChatSession {
+  id: string
+  user_id: string
+  initial_context_type: 'none' | 'situation' | 'contract'
+  initial_context_id?: string | null
+  title?: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface ChatMessage {
+  id: string
+  session_id: string
+  user_id: string
+  sender_type: 'user' | 'assistant'
+  message: string
+  sequence_number: number
+  context_type: 'none' | 'situation' | 'contract'
+  context_id?: string | null
+  metadata?: any
+  created_at: string
+}
+
+export interface CreateChatSessionRequest {
+  initial_context_type?: 'none' | 'situation' | 'contract'
+  initial_context_id?: string | null
+  title?: string | null
+}
+
+export interface SaveChatMessageRequest {
+  sender_type: 'user' | 'assistant'
+  message: string
+  sequence_number: number
+  context_type?: 'none' | 'situation' | 'contract'
+  context_id?: string | null
+}
+
+/**
+ * 챗 세션 생성
+ */
+export const createChatSession = async (
+  request: CreateChatSessionRequest,
+  userId: string
+): Promise<{ id: string; success: boolean }> => {
+  try {
+    const url = `${LEGAL_API_BASE_V2}/chat/sessions`
+    
+    const authHeaders = await getAuthHeaders()
+    const headers: Record<string, string> = {
+      ...(authHeaders as Record<string, string>),
+      'Content-Type': 'application/json',
+      'X-User-Id': userId,
+    }
+    
+    const response = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(request),
+    })
+    
+    if (!response.ok) {
+      const errorText = await response.text()
+      throw new Error(`챗 세션 생성 실패: ${response.status} - ${errorText}`)
+    }
+    
+    const data = await response.json()
+    return data
+  } catch (error) {
+    console.error('챗 세션 생성 오류:', error)
+    throw error
+  }
+}
+
+/**
+ * 챗 세션 목록 조회
+ */
+export const getChatSessions = async (
+  userId: string,
+  limit: number = 20,
+  offset: number = 0
+): Promise<ChatSession[]> => {
+  try {
+    const url = `${LEGAL_API_BASE_V2}/chat/sessions`
+    
+    const authHeaders = await getAuthHeaders()
+    const headers: Record<string, string> = {
+      ...(authHeaders as Record<string, string>),
+      'Content-Type': 'application/json',
+      'X-User-Id': userId,
+    }
+    
+    const params = new URLSearchParams({
+      limit: limit.toString(),
+      offset: offset.toString(),
+    })
+    
+    const response = await fetch(`${url}?${params}`, {
+      method: 'GET',
+      headers,
+    })
+    
+    if (!response.ok) {
+      const errorText = await response.text()
+      throw new Error(`챗 세션 목록 조회 실패: ${response.status} - ${errorText}`)
+    }
+    
+    const data = await response.json()
+    return data
+  } catch (error) {
+    console.error('챗 세션 목록 조회 오류:', error)
+    throw error
+  }
+}
+
+/**
+ * 특정 챗 세션 조회
+ */
+export const getChatSession = async (
+  sessionId: string,
+  userId?: string | null
+): Promise<ChatSession> => {
+  try {
+    const url = `${LEGAL_API_BASE_V2}/chat/sessions/${sessionId}`
+    
+    const authHeaders = await getAuthHeaders()
+    const headers: Record<string, string> = {
+      ...(authHeaders as Record<string, string>),
+      'Content-Type': 'application/json',
+    }
+    
+    if (userId) {
+      headers['X-User-Id'] = userId
+    }
+    
+    const response = await fetch(url, {
+      method: 'GET',
+      headers,
+    })
+    
+    if (!response.ok) {
+      const errorText = await response.text()
+      throw new Error(`챗 세션 조회 실패: ${response.status} - ${errorText}`)
+    }
+    
+    const data = await response.json()
+    return data
+  } catch (error) {
+    console.error('챗 세션 조회 오류:', error)
+    throw error
+  }
+}
+
+/**
+ * 챗 메시지 저장
+ */
+export const saveChatMessage = async (
+  sessionId: string,
+  request: SaveChatMessageRequest,
+  userId: string
+): Promise<{ id: string; success: boolean }> => {
+  try {
+    const url = `${LEGAL_API_BASE_V2}/chat/sessions/${sessionId}/messages`
+    
+    const authHeaders = await getAuthHeaders()
+    const headers: Record<string, string> = {
+      ...(authHeaders as Record<string, string>),
+      'Content-Type': 'application/json',
+      'X-User-Id': userId,
+    }
+    
+    const response = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(request),
+    })
+    
+    if (!response.ok) {
+      const errorText = await response.text()
+      throw new Error(`챗 메시지 저장 실패: ${response.status} - ${errorText}`)
+    }
+    
+    const data = await response.json()
+    return data
+  } catch (error) {
+    console.error('챗 메시지 저장 오류:', error)
+    throw error
+  }
+}
+
+/**
+ * 챗 메시지 목록 조회
+ */
+export const getChatMessages = async (
+  sessionId: string,
+  userId?: string | null
+): Promise<ChatMessage[]> => {
+  try {
+    const url = `${LEGAL_API_BASE_V2}/chat/sessions/${sessionId}/messages`
+    
+    const authHeaders = await getAuthHeaders()
+    const headers: Record<string, string> = {
+      ...(authHeaders as Record<string, string>),
+      'Content-Type': 'application/json',
+    }
+    
+    if (userId) {
+      headers['X-User-Id'] = userId
+    }
+    
+    const response = await fetch(url, {
+      method: 'GET',
+      headers,
+    })
+    
+    if (!response.ok) {
+      const errorText = await response.text()
+      throw new Error(`챗 메시지 조회 실패: ${response.status} - ${errorText}`)
+    }
+    
+    const data = await response.json()
+    return data
+  } catch (error) {
+    console.error('챗 메시지 조회 오류:', error)
+    throw error
+  }
+}
+
+/**
+ * 챗 세션 업데이트
+ */
+export const updateChatSession = async (
+  sessionId: string,
+  title: string,
+  userId: string
+): Promise<{ success: boolean }> => {
+  try {
+    const url = `${LEGAL_API_BASE_V2}/chat/sessions/${sessionId}`
+    
+    const authHeaders = await getAuthHeaders()
+    const headers: Record<string, string> = {
+      ...(authHeaders as Record<string, string>),
+      'Content-Type': 'application/json',
+      'X-User-Id': userId,
+    }
+    
+    const response = await fetch(url, {
+      method: 'PUT',
+      headers,
+      body: JSON.stringify({ title }),
+    })
+    
+    if (!response.ok) {
+      const errorText = await response.text()
+      throw new Error(`챗 세션 업데이트 실패: ${response.status} - ${errorText}`)
+    }
+    
+    const data = await response.json()
+    return data
+  } catch (error) {
+    console.error('챗 세션 업데이트 오류:', error)
+    throw error
+  }
+}
+
+/**
+ * 챗 세션 삭제
+ */
+export const deleteChatSession = async (
+  sessionId: string,
+  userId: string
+): Promise<{ success: boolean }> => {
+  try {
+    const url = `${LEGAL_API_BASE_V2}/chat/sessions/${sessionId}`
+    
+    const authHeaders = await getAuthHeaders()
+    const headers: Record<string, string> = {
+      ...(authHeaders as Record<string, string>),
+      'Content-Type': 'application/json',
+      'X-User-Id': userId,
+    }
+    
+    const response = await fetch(url, {
+      method: 'DELETE',
+      headers,
+    })
+    
+    if (!response.ok) {
+      const errorText = await response.text()
+      throw new Error(`챗 세션 삭제 실패: ${response.status} - ${errorText}`)
+    }
+    
+    const data = await response.json()
+    return data
+  } catch (error) {
+    console.error('챗 세션 삭제 오류:', error)
+    throw error
+  }
+}
+
+// ============================================================================
+// 상황 분석 리포트 저장/조회 (Supabase)
+// ============================================================================
+
+export interface SituationReport {
+  id: string;
+  user_id?: string;
+  question: string;
+  answer: string;
+  summary?: string;
+  details?: string;
+  category_hint?: string;
+  employment_type?: string;
+  work_period?: string;
+  social_insurance?: string;
+  risk_score?: number;
+  classified_type?: string;
+  legal_basis?: string[];
+  recommendations?: string[];
+  tags?: string[];
+  analysis_result?: any;
+  created_at: string;
+  updated_at: string;
+}
+
+/**
+ * 상황 분석 리포트를 Supabase에 저장
+ */
+export const saveSituationReport = async (
+  report: Omit<SituationReport, 'id' | 'created_at' | 'updated_at'>
+): Promise<SituationReport> => {
+  try {
+    const { createSupabaseBrowserClient } = await import('@/supabase/supabase-client');
+    const supabase = createSupabaseBrowserClient();
+    
+    // 사용자 ID 가져오기 (선택사항)
+    const { data: { user } } = await supabase.auth.getUser();
+    const userId = user?.id || null;
+
+    const { data, error } = await supabase
+      .from('situation_reports')
+      .insert({
+        user_id: userId,
+        question: report.question,
+        answer: report.answer,
+        summary: report.summary,
+        details: report.details,
+        category_hint: report.category_hint,
+        employment_type: report.employment_type,
+        work_period: report.work_period,
+        social_insurance: report.social_insurance,
+        risk_score: report.risk_score,
+        classified_type: report.classified_type,
+        legal_basis: report.legal_basis,
+        recommendations: report.recommendations,
+        tags: report.tags,
+        analysis_result: report.analysis_result,
+      })
+      .select()
+      .single();
+
+    if (error) {
+      console.error('리포트 저장 실패:', error);
+      throw new Error(`리포트 저장 실패: ${error.message}`);
+    }
+
+    return data as SituationReport;
+  } catch (error) {
+    console.error('리포트 저장 오류:', error);
+    throw error;
+  }
+};
+
+/**
+ * 사용자의 상황 분석 리포트 목록 조회
+ */
+export const getSituationReports = async (limit: number = 50): Promise<SituationReport[]> => {
+  try {
+    const { createSupabaseBrowserClient } = await import('@/supabase/supabase-client');
+    const supabase = createSupabaseBrowserClient();
+
+    const { data, error } = await supabase
+      .from('situation_reports')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(limit);
+
+    if (error) {
+      console.error('리포트 조회 실패:', error);
+      throw new Error(`리포트 조회 실패: ${error.message}`);
+    }
+
+    return (data || []) as SituationReport[];
+  } catch (error) {
+    console.error('리포트 조회 오류:', error);
+    throw error;
+  }
+};
+
+/**
+ * 특정 리포트 조회
+ */
+export const getSituationReport = async (reportId: string): Promise<SituationReport | null> => {
+  try {
+    const { createSupabaseBrowserClient } = await import('@/supabase/supabase-client');
+    const supabase = createSupabaseBrowserClient();
+
+    const { data, error } = await supabase
+      .from('situation_reports')
+      .select('*')
+      .eq('id', reportId)
+      .single();
+
+    if (error) {
+      if (error.code === 'PGRST116') {
+        // 리포트를 찾을 수 없음
+        return null;
+      }
+      console.error('리포트 조회 실패:', error);
+      throw new Error(`리포트 조회 실패: ${error.message}`);
+    }
+
+    return data as SituationReport;
+  } catch (error) {
+    console.error('리포트 조회 오류:', error);
+    throw error;
+  }
+};
+
+/**
+ * 리포트 삭제
+ */
+export const deleteSituationReport = async (reportId: string): Promise<void> => {
+  try {
+    const { createSupabaseBrowserClient } = await import('@/supabase/supabase-client');
+    const supabase = createSupabaseBrowserClient();
+
+    const { error } = await supabase
+      .from('situation_reports')
+      .delete()
+      .eq('id', reportId);
+
+    if (error) {
+      console.error('리포트 삭제 실패:', error);
+      throw new Error(`리포트 삭제 실패: ${error.message}`);
+    }
+  } catch (error) {
+    console.error('리포트 삭제 오류:', error);
+    throw error;
+  }
+};
+
+// ============================================================================
+// 상황 분석 결과 조회 (Supabase - situation_analyses 테이블)
+// ============================================================================
+
+/**
+ * 상황 분석 결과 조회 (situation_analyses 테이블에서)
+ * @param analysisId situation_analyses.id
+ * @returns 상황 분석 결과 전체 데이터
+ */
+export const getAnalysisResult = async (
+  analysisId: string
+): Promise<import('@/types/legal').SituationAnalysisResult | null> => {
+  try {
+    const { createSupabaseBrowserClient } = await import('@/supabase/supabase-client');
+    const supabase = createSupabaseBrowserClient();
+
+    const { data, error } = await supabase
+      .from('situation_analyses')
+      .select('*')
+      .eq('id', analysisId)
+      .single();
+
+    if (error) {
+      if (error.code === 'PGRST116') {
+        // 레코드를 찾을 수 없음
+        return null;
+      }
+      console.error('분석 결과 조회 실패:', error);
+      throw new Error(`분석 결과 조회 실패: ${error.message}`);
+    }
+
+    if (!data) {
+      return null;
+    }
+
+    // analysis JSONB 필드 파싱 (이미 객체일 수도 있음)
+    let analysis: import('@/types/legal').AnalysisJSON;
+    if (typeof data.analysis === 'string') {
+      try {
+        analysis = JSON.parse(data.analysis) as import('@/types/legal').AnalysisJSON;
+      } catch (parseError) {
+        console.error('analysis JSON 파싱 실패:', parseError);
+        // 기본값으로 fallback
+        analysis = {
+          summary: data.situation || '',
+          risk_score: data.risk_score || 0,
+        };
+      }
+    } else if (data.analysis && typeof data.analysis === 'object' && !Array.isArray(data.analysis)) {
+      // Json 타입을 AnalysisJSON으로 타입 단언 (unknown을 거쳐서)
+      analysis = data.analysis as unknown as import('@/types/legal').AnalysisJSON;
+    } else {
+      // 기본값으로 fallback
+      analysis = {
+        summary: data.situation || '',
+        risk_score: data.risk_score || 0,
+      };
+    }
+
+    return {
+      id: data.id,
+      user_id: data.user_id ?? undefined,
+      situation: data.situation ?? undefined,
+      category: data.category || data.category_hint || undefined,
+      risk_score: data.risk_score ?? undefined,
+      risk_level: data.risk_level ?? undefined,
+      analysis,
+      created_at: data.created_at,
+      updated_at: data.updated_at ?? undefined,
+    };
+  } catch (error) {
+    console.error('분석 결과 조회 오류:', error);
+    throw error;
+  }
+};
+
+/**
+ * 상황 분석 증거 파일 업로드
+ * Supabase Storage에 파일 업로드하고 situation_evidences 테이블에 메타데이터 저장
+ */
+export const uploadSituationEvidence = async (
+  file: File,
+  analysisId: string,
+  evidenceType: string
+): Promise<{ id: string; file_path: string; file_url: string }> => {
+  try {
+    // 입력 검증
+    if (!file) {
+      throw new Error('파일이 선택되지 않았습니다.')
+    }
+    
+    if (!analysisId) {
+      throw new Error('분석 ID가 필요합니다.')
+    }
+    
+    if (!evidenceType) {
+      throw new Error('증거 유형이 필요합니다.')
+    }
+    
+    // 파일 크기 검증 (100MB 제한)
+    const maxSize = 100 * 1024 * 1024 // 100MB
+    if (file.size > maxSize) {
+      throw new Error(`파일 크기가 너무 큽니다. 최대 ${maxSize / 1024 / 1024}MB까지 업로드할 수 있습니다.`)
+    }
+    
+    const { createSupabaseBrowserClient } = await import('@/supabase/supabase-client')
+    const supabase = createSupabaseBrowserClient()
+    
+    // 세션 먼저 확인 (토큰 손상 방지)
+    const { data: { session }, error: sessionError } = await supabase.auth.getSession()
+    
+    // 세션이 없거나 에러가 있는 경우
+    if (sessionError || !session) {
+      // 토큰 손상 에러 감지
+      const isTokenCorrupted = sessionError?.message?.includes('missing sub claim') || 
+                               sessionError?.message?.includes('invalid claim') ||
+                               sessionError?.message?.includes('JWT') ||
+                               sessionError?.status === 403
+      
+      if (isTokenCorrupted) {
+        console.warn('[토큰 손상 감지] 세션 정리 중:', sessionError?.message)
+        try {
+          // 손상된 세션 정리
+          await supabase.auth.signOut({ scope: 'local' })
+          // 로컬 스토리지의 세션 정보도 정리
+          if (typeof window !== 'undefined') {
+            const keys = Object.keys(localStorage)
+            keys.forEach(key => {
+              if (key.includes('supabase') || key.includes('auth')) {
+                localStorage.removeItem(key)
+              }
+            })
+          }
+        } catch (signOutError) {
+          console.error('[로그아웃 처리 실패]', signOutError)
+        }
+        throw new Error('인증 세션이 손상되었습니다. 페이지를 새로고침하거나 다시 로그인해주세요.')
+      }
+      
+      if (sessionError) {
+        console.error('[세션 에러]', sessionError)
+        throw new Error(`로그인 확인 실패: ${sessionError.message}`)
+      }
+      
+      throw new Error('로그인이 필요합니다. 로그인 후 다시 시도해주세요.')
+    }
+    
+    // 세션이 있으면 세션의 사용자 정보 사용
+    let userId: string | null = null
+    
+    if (session?.user) {
+      userId = session.user.id
+    } else {
+      // 세션에 사용자 정보가 없으면 getUser() 시도 (하지만 더 안전하게)
+      try {
+        const { data: { user }, error: userError } = await supabase.auth.getUser()
+        
+        // 토큰 손상 에러 감지
+        const isTokenCorrupted = userError?.message?.includes('missing sub claim') || 
+                                 userError?.message?.includes('invalid claim') ||
+                                 userError?.message?.includes('JWT') ||
+                                 userError?.status === 403
+        
+        if (isTokenCorrupted) {
+          console.warn('[토큰 손상 감지] 세션 정리 중:', userError?.message)
+          try {
+            await supabase.auth.signOut({ scope: 'local' })
+            if (typeof window !== 'undefined') {
+              const keys = Object.keys(localStorage)
+              keys.forEach(key => {
+                if (key.includes('supabase') || key.includes('auth')) {
+                  localStorage.removeItem(key)
+                }
+              })
+            }
+          } catch (signOutError) {
+            console.error('[로그아웃 처리 실패]', signOutError)
+          }
+          throw new Error('인증 세션이 손상되었습니다. 페이지를 새로고침하거나 다시 로그인해주세요.')
+        }
+        
+        if (userError) {
+          console.error('[인증 에러]', userError)
+          throw new Error(`로그인 확인 실패: ${userError.message}`)
+        }
+        
+        if (!user) {
+          throw new Error('로그인이 필요합니다. 로그인 후 다시 시도해주세요.')
+        }
+        
+        userId = user.id
+      } catch (error: any) {
+        // 이미 처리된 에러는 그대로 throw
+        if (error.message?.includes('인증 세션이 손상') || error.message?.includes('로그인 확인 실패') || error.message?.includes('로그인이 필요')) {
+          throw error
+        }
+        // 예상치 못한 에러
+        console.error('[예상치 못한 인증 에러]', error)
+        throw new Error('인증 확인 중 오류가 발생했습니다. 다시 시도해주세요.')
+      }
+    }
+    
+    if (!userId) {
+      throw new Error('사용자 ID를 가져올 수 없습니다. 다시 로그인해주세요.')
+    }
+
+    // 파일 확장자 추출
+    const fileExt = file.name.split('.').pop() || 'pdf'
+    const timestamp = Date.now()
+    const randomStr = Math.random().toString(36).substring(7)
+    
+    // 파일명 정제 (더 안전하게)
+    const sanitizedFileName = file.name
+      .replace(/\s+/g, '_') // 공백을 언더스코어로
+      .replace(/[^a-zA-Z0-9._-]/g, '') // 영문, 숫자, 점, 언더스코어, 대시만 허용
+      .replace(/_{2,}/g, '_') // 연속된 언더스코어를 하나로
+      .substring(0, 100) // 파일명 길이 제한 (더 여유있게)
+    
+    if (!sanitizedFileName) {
+      throw new Error('파일명이 유효하지 않습니다.')
+    }
+    
+    const storageFileName = `${analysisId}/${timestamp}_${randomStr}_${sanitizedFileName}`
+    
+    // Storage 버킷 목록 시도 (우선순위: attach_file > announcements)
+    const bucketNames = ['attach_file', 'announcements']
+    let uploadData: any = null
+    let usedBucket: string | null = null
+
+    let lastError: any = null
+    for (const bucketName of bucketNames) {
+      try {
+        const uploadPath = `situation_evidences/${storageFileName}`
+        console.log(`[업로드 시도] 버킷: ${bucketName}, 경로: ${uploadPath}`)
+        
+        const { data, error } = await supabase.storage
+          .from(bucketName)
+          .upload(uploadPath, file, {
+            cacheControl: '3600',
+            upsert: false,
+          })
+
+        if (!error && data) {
+          uploadData = data
+          usedBucket = bucketName
+          console.log(`[업로드 성공] 버킷: ${bucketName}, 경로: ${uploadPath}`)
+          break
+        } else {
+          lastError = error
+          console.warn(`[${bucketName}] 버킷 업로드 실패:`, error)
+          
+          // 특정 에러들은 건너뛰기
+          if (error?.message?.includes('Bucket not found') || 
+              error?.message?.includes('404') ||
+              error?.message?.includes('not found')) {
+            console.warn(`[${bucketName}] 버킷을 찾을 수 없음, 다음 버킷 시도`)
+            continue
+          }
+          
+          // 권한 에러나 다른 에러도 기록하고 다음 버킷 시도
+          console.error(`[${bucketName}] 업로드 에러 상세:`, {
+            message: error?.message,
+            error: error
+          })
+          continue
+        }
+      } catch (err: any) {
+        lastError = err
+        console.error(`[${bucketName}] 버킷 접근 예외:`, {
+          message: err?.message,
+          stack: err?.stack,
+          error: err
+        })
+        continue
+      }
+    }
+
+    if (!uploadData || !usedBucket) {
+      const errorMessage = lastError?.message || '알 수 없는 오류'
+      const errorDetails = lastError ? JSON.stringify(lastError, null, 2) : ''
+      console.error('파일 업로드 실패 - 모든 버킷 시도 완료:', {
+        lastError,
+        errorMessage,
+        errorDetails,
+        attemptedBuckets: bucketNames
+      })
+      throw new Error(`파일 업로드에 실패했습니다. ${errorMessage} (시도한 버킷: ${bucketNames.join(', ')})`)
+    }
+
+    const filePath = `situation_evidences/${storageFileName}`
+    
+    // Public URL 가져오기
+    const { data: { publicUrl } } = supabase.storage
+      .from(usedBucket)
+      .getPublicUrl(filePath)
+
+    // MIME 타입 추정
+    const mimeType = file.type || (() => {
+      const ext = fileExt.toLowerCase()
+      const mimeMap: Record<string, string> = {
+        'pdf': 'application/pdf',
+        'jpg': 'image/jpeg',
+        'jpeg': 'image/jpeg',
+        'png': 'image/png',
+        'txt': 'text/plain',
+        'doc': 'application/msword',
+        'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        'hwp': 'application/x-hwp',
+        'hwpx': 'application/x-hwpx',
+        'mp3': 'audio/mpeg',
+        'mp4': 'video/mp4',
+        'wav': 'audio/wav',
+      }
+      return mimeMap[ext] || 'application/octet-stream'
+    })()
+
+    // DB에 메타데이터 저장
+    console.log('[DB 저장 시도]', {
+      analysis_id: analysisId,
+      user_id: userId,
+      file_path: filePath,
+      file_name: file.name,
+      file_size: file.size,
+      evidence_type: evidenceType
+    })
+    
+    // 타입 단언: situation_evidences 테이블이 Supabase 타입에 없을 수 있음
+    const { data: evidenceData, error: dbError } = await (supabase
+      .from('situation_evidences' as any)
+      .insert({
+        analysis_id: analysisId,
+        user_id: userId,
+        file_path: filePath,
+        file_name: file.name,
+        file_size: file.size,
+        mime_type: mimeType,
+        evidence_type: evidenceType,
+      })
+      .select()
+      .single()) as { data: { id: string } | null; error: any }
+
+    if (dbError) {
+      console.error('[DB 저장 실패]', {
+        error: dbError,
+        message: dbError.message,
+        details: dbError.details,
+        hint: dbError.hint,
+        code: dbError.code
+      })
+      
+      // DB 저장 실패 시 업로드한 파일 삭제 시도
+      try {
+        await supabase.storage
+          .from(usedBucket)
+          .remove([filePath])
+        console.log('[파일 삭제 완료] 업로드 실패로 인한 롤백:', filePath)
+      } catch (deleteError) {
+        console.error('[파일 삭제 실패]', deleteError)
+      }
+      
+      // 더 자세한 에러 메시지
+      let errorMsg = `DB 저장 실패: ${dbError.message}`
+      if (dbError.code === '23503') {
+        errorMsg += ' (외래 키 제약 조건 위반 - analysis_id 또는 user_id가 유효하지 않습니다)'
+      } else if (dbError.code === '42P01') {
+        errorMsg += ' (테이블이 존재하지 않습니다 - situation_evidences 테이블을 확인해주세요)'
+      } else if (dbError.details) {
+        errorMsg += ` (상세: ${dbError.details})`
+      }
+      
+      throw new Error(errorMsg)
+    }
+    
+    if (!evidenceData || !evidenceData.id) {
+      throw new Error('DB 저장 후 데이터를 가져올 수 없습니다.')
+    }
+    
+    console.log('[DB 저장 성공]', evidenceData)
+
+    return {
+      id: evidenceData.id,
+      file_path: filePath,
+      file_url: publicUrl,
+    }
+  } catch (error: any) {
+    console.error('증거 파일 업로드 오류:', error)
+    throw error
+  }
+}
+
+/**
+ * 상황 분석 증거 파일 목록 조회
+ */
+export const getSituationEvidences = async (
+  analysisId: string
+): Promise<Array<{
+  id: string
+  file_name: string
+  file_size: number | null
+  mime_type: string | null
+  evidence_type: string
+  description: string | null
+  file_path: string
+  file_url: string
+  created_at: string
+}>> => {
+  try {
+    const { createSupabaseBrowserClient } = await import('@/supabase/supabase-client')
+    const supabase = createSupabaseBrowserClient()
+    
+    // 타입 단언: situation_evidences 테이블이 Supabase 타입에 없을 수 있음
+    const { data, error } = await (supabase
+      .from('situation_evidences' as any)
+      .select('id, file_name, file_size, mime_type, evidence_type, description, file_path, created_at')
+      .eq('analysis_id', analysisId)
+      .order('created_at', { ascending: false })) as { 
+        data: Array<{
+          id: string
+          file_name: string
+          file_size: number | null
+          mime_type: string | null
+          evidence_type: string
+          description: string | null
+          file_path: string
+          created_at: string
+        }> | null
+        error: any
+      }
+
+    if (error) {
+      throw new Error(`증거 파일 목록 조회 실패: ${error.message}`)
+    }
+
+    // 파일 경로를 기반으로 다운로드 URL 생성
+    const bucketNames = ['attach_file', 'announcements']
+    const filesWithUrls = (data || []).map((file) => {
+      let fileUrl = ''
+      
+      // 각 버킷에서 public URL 시도
+      for (const bucketName of bucketNames) {
+        try {
+          const { data: { publicUrl } } = supabase.storage
+            .from(bucketName)
+            .getPublicUrl(file.file_path)
+          
+          if (publicUrl) {
+            fileUrl = publicUrl
+            break
+          }
+        } catch (err) {
+          // 다음 버킷 시도
+          continue
+        }
+      }
+
+      return {
+        ...file,
+        file_url: fileUrl,
+      }
+    })
+
+    return filesWithUrls
+  } catch (error: any) {
+    console.error('증거 파일 목록 조회 오류:', error)
+    throw error
+  }
+}
+
+/**
+ * 상황 분석 증거 파일 삭제
+ */
+export const deleteSituationEvidence = async (
+  evidenceId: string
+): Promise<void> => {
+  try {
+    const { createSupabaseBrowserClient } = await import('@/supabase/supabase-client')
+    const supabase = createSupabaseBrowserClient()
+    
+    // 먼저 파일 정보 가져오기
+    // 타입 단언: situation_evidences 테이블이 Supabase 타입에 없을 수 있음
+    const { data: evidence, error: fetchError } = await (supabase
+      .from('situation_evidences' as any)
+      .select('file_path')
+      .eq('id', evidenceId)
+      .single()) as { 
+        data: { file_path: string } | null
+        error: any
+      }
+
+    if (fetchError || !evidence || !evidence.file_path) {
+      throw new Error('증거 파일을 찾을 수 없습니다.')
+    }
+
+    // Storage에서 파일 삭제
+    const bucketNames = ['attach_file', 'announcements']
+    for (const bucketName of bucketNames) {
+      try {
+        const { error: storageError } = await supabase.storage
+          .from(bucketName)
+          .remove([evidence.file_path])
+        
+        if (!storageError) {
+          break // 성공하면 중단
+        }
+      } catch (err) {
+        console.warn(`[${bucketName}] 파일 삭제 실패:`, err)
+      }
+    }
+
+    // DB에서 레코드 삭제
+    // 타입 단언: situation_evidences 테이블이 Supabase 타입에 없을 수 있음
+    const { error: dbError } = await (supabase
+      .from('situation_evidences' as any)
+      .delete()
+      .eq('id', evidenceId)) as { error: any }
+
+    if (dbError) {
+      throw new Error(`DB 삭제 실패: ${dbError.message}`)
+    }
+  } catch (error: any) {
+    console.error('증거 파일 삭제 오류:', error)
+    throw error
+  }
+}
+
+// ============================================================================
+// Agent 기반 통합 챗 API
+// ============================================================================
+
+export type AgentChatMode = 'plain' | 'contract' | 'situation'
+
+export interface AgentChatRequest {
+  mode: AgentChatMode
+  message: string
+  sessionId?: string
+  // contract 모드
+  file?: File
+  contractAnalysisId?: string
+  // situation 모드
+  situationTemplateKey?: string
+  situationForm?: {
+    situation: string
+    category?: string
+    employmentType?: string
+    workPeriod?: string
+    socialInsurance?: string[]
+  }
+  situationAnalysisId?: string
+}
+
+export interface UsedReportMeta {
+  type: 'contract' | 'situation'
+  analysisId: string
+  findingsIds?: string[]
+}
+
+export interface UsedSourceMeta {
+  documentTitle: string
+  fileUrl?: string
+  sourceType: string
+  similarityScore?: number
+}
+
+export interface ContractAnalysisSummary {
+  id: string
+  title?: string
+  riskScore?: number
+  riskLevel?: 'low' | 'medium' | 'high'
+  summary?: string
+}
+
+export interface SituationAnalysisSummary {
+  id: string
+  title?: string
+  riskScore?: number
+  riskLevel?: 'low' | 'medium' | 'high'
+  summary?: string
+}
+
+export interface AgentChatResponse {
+  sessionId: string
+  mode: AgentChatMode
+  contractAnalysisId?: string
+  situationAnalysisId?: string
+  answerMarkdown: string
+  usedReports: UsedReportMeta[]
+  usedSources: UsedSourceMeta[]
+  contractAnalysis?: ContractAnalysisSummary
+  situationAnalysis?: SituationAnalysisSummary
+  cases?: LegalCasePreview[]
+}
+
+/**
+ * Agent 기반 통합 챗 API
+ */
+export const chatWithAgent = async (
+  request: AgentChatRequest,
+  userId?: string | null
+): Promise<AgentChatResponse> => {
+  try {
+    const url = `${LEGAL_API_BASE_V2}/agent/chat`
+    
+    // 인증 헤더 가져오기
+    const authHeaders = await getAuthHeaders()
+    
+    // FormData 생성
+    const formData = new FormData()
+    formData.append('mode', request.mode)
+    
+    // message 처리: 빈 값일 때 기본값 설정
+    let messageToSend = request.message?.trim() || ''
+    
+    // situation 모드 첫 요청일 때 message가 빈 값이면 situationForm.situation 사용
+    if (request.mode === 'situation' && !messageToSend && request.situationForm?.situation) {
+      messageToSend = request.situationForm.situation.trim()
+      console.log('⚠️ [Agent 챗] situation 모드에서 message가 빈 값이어서 situationForm.situation을 사용합니다:', messageToSend)
+    }
+    
+    // message가 여전히 빈 값이면 기본 메시지 사용
+    if (!messageToSend) {
+      if (request.mode === 'situation') {
+        messageToSend = '상황에 대해 분석해주세요.'
+      } else if (request.mode === 'contract') {
+        messageToSend = '계약서에 대해 질문드립니다.'
+      } else {
+        messageToSend = '질문드립니다.'
+      }
+      console.log('⚠️ [Agent 챗] message가 빈 값이어서 기본 메시지를 사용합니다:', messageToSend)
+    }
+    
+    formData.append('message', messageToSend)
+    
+    if (request.sessionId) {
+      formData.append('sessionId', request.sessionId)
+    }
+    
+    // contract 모드 처리
+    if (request.mode === 'contract') {
+      if (request.file) {
+        // 첫 요청: 파일 업로드 (필수)
+        formData.append('file', request.file)
+      } else if (request.contractAnalysisId) {
+        // 후속 요청: 기존 분석 ID 사용
+        formData.append('contractAnalysisId', request.contractAnalysisId)
+      } else {
+        // 첫 요청인데 file이 없으면 에러
+        throw new Error('contract 모드 첫 요청 시 file이 필수입니다.')
+      }
+    }
+    
+    // situation 모드 처리
+    if (request.mode === 'situation') {
+      if (request.situationForm && request.situationTemplateKey) {
+        // 첫 요청: 상황 폼 제출
+        formData.append('situationTemplateKey', request.situationTemplateKey)
+        formData.append('situationForm', JSON.stringify(request.situationForm))
+      } else if (request.situationAnalysisId) {
+        // 후속 요청: 기존 분석 ID 사용
+        formData.append('situationAnalysisId', request.situationAnalysisId)
+      } else {
+        // 첫 요청인데 situationForm이 없으면 에러
+        throw new Error('situation 모드 첫 요청 시 situationTemplateKey와 situationForm이 필수입니다.')
+      }
+    }
+    
+    // 📤 요청 데이터 로그 출력
+    console.group('📤 [Agent 챗] 요청 데이터')
+    console.log('URL:', url)
+    console.log('Mode:', request.mode)
+    console.log('원본 Message:', request.message || '(없음)')
+    console.log('전송할 Message:', messageToSend)
+    console.log('SessionId:', request.sessionId || '(없음)')
+    console.log('UserId:', userId || '(없음)')
+    
+    // 모드별 상세 정보
+    if (request.mode === 'contract') {
+      console.log('Contract 모드 상세:')
+      console.log('  - File:', request.file ? `${request.file.name} (${request.file.size} bytes)` : '(없음)')
+      console.log('  - ContractAnalysisId:', request.contractAnalysisId || '(없음)')
+    } else if (request.mode === 'situation') {
+      console.log('Situation 모드 상세:')
+      console.log('  - SituationTemplateKey:', request.situationTemplateKey || '(없음)')
+      console.log('  - SituationForm:', request.situationForm ? JSON.stringify(request.situationForm, null, 2) : '(없음)')
+      console.log('  - SituationAnalysisId:', request.situationAnalysisId || '(없음)')
+    } else {
+      console.log('Plain 모드 (추가 파라미터 없음)')
+    }
+    console.groupEnd()
+    
+    // FormData 전송 시 Content-Type은 브라우저가 자동으로 설정하므로 제거
+    const headersForFormData: Record<string, string> = {
+      ...(authHeaders as Record<string, string>),
+    }
+    delete headersForFormData['Content-Type']
+    
+    // X-User-Id 헤더 추가 (명세에 따라 필수)
+    if (userId !== undefined && userId !== null) {
+      headersForFormData['X-User-Id'] = userId
+    }
+    
+    // 헤더 정보 로그 (민감한 정보는 마스킹)
+    console.log('📋 [Agent 챗] 요청 헤더:', {
+      ...headersForFormData,
+      Authorization: headersForFormData['Authorization'] ? 'Bearer ***' : '(없음)',
+    })
+    
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: headersForFormData,
+      body: formData,
+    })
+    
+    if (!response.ok) {
+      const errorText = await response.text()
+      console.error('❌ [Agent 챗] 응답 에러:', {
+        status: response.status,
+        statusText: response.statusText,
+        errorText,
+      })
+      throw new Error(`Agent 챗 실패: ${response.status} - ${errorText}`)
+    }
+    
+    const data: AgentChatResponse = await response.json()
+    
+    // 📥 응답 데이터 로그 출력
+    console.group('📥 [Agent 챗] 응답 데이터')
+    console.log('SessionId:', data.sessionId)
+    console.log('Mode:', data.mode)
+    console.log('ContractAnalysisId:', data.contractAnalysisId || '(없음)')
+    console.log('SituationAnalysisId:', data.situationAnalysisId || '(없음)')
+    console.log('AnswerMarkdown 길이:', data.answerMarkdown?.length || 0, '자')
+    console.log('AnswerMarkdown 미리보기:', data.answerMarkdown?.substring(0, 200) || '(없음)', '...')
+    console.log('UsedReports 개수:', data.usedReports?.length || 0)
+    if (data.usedReports && data.usedReports.length > 0) {
+      console.log('UsedReports 상세:', JSON.stringify(data.usedReports, null, 2))
+    }
+    console.log('UsedSources 개수:', data.usedSources?.length || 0)
+    if (data.usedSources && data.usedSources.length > 0) {
+      console.log('UsedSources 상세:', JSON.stringify(data.usedSources, null, 2))
+    }
+    if (data.contractAnalysis) {
+      console.log('ContractAnalysis:', JSON.stringify(data.contractAnalysis, null, 2))
+    }
+    if (data.situationAnalysis) {
+      console.log('SituationAnalysis:', JSON.stringify(data.situationAnalysis, null, 2))
+    }
+    console.log('전체 응답 객체:', JSON.stringify(data, null, 2))
+    console.groupEnd()
+    
+    return data
+  } catch (error) {
+    console.error('Agent 챗 오류:', error)
+    
+    // Failed to fetch 오류인 경우 더 자세한 정보 제공
+    if (error instanceof TypeError && error.message === 'Failed to fetch') {
+      const backendUrl = `${BACKEND_API_URL}/api/v2/legal/agent/chat`
+      const detailedError = new Error(
+        `백엔드 서버에 연결할 수 없습니다. 다음을 확인해주세요:\n` +
+        `1. 백엔드 서버가 실행 중인지 확인 (${BACKEND_API_URL})\n` +
+        `2. 환경 변수 NEXT_PUBLIC_BACKEND_API_URL이 올바르게 설정되었는지 확인\n` +
+        `3. 네트워크 연결 상태 확인\n` +
+        `요청 URL: ${backendUrl}`
+      )
+      console.error('상세 오류 정보:', detailedError.message)
+      throw detailedError
+    }
+    
+    throw error
+  }
+}
+

@@ -1,0 +1,68 @@
+name: Update Notion Daily Work Log
+
+on:
+  # 수동 실행
+  workflow_dispatch:
+  # 매일 한국 시간 오전 9시에 자동 실행 (UTC 00:00 = KST 09:00)
+  schedule:
+    - cron: '0 0 * * *'
+  # main 브랜치에 push될 때마다 실행
+  push:
+    branches:
+      - main
+
+jobs:
+  update-notion:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # 전체 히스토리 가져오기 (커밋 로그를 위해 필요)
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Configure Git
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+
+      - name: Update Notion with today's work
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          NOTION_PARENT_PAGE_ID: ${{ secrets.NOTION_PARENT_PAGE_ID }}
+        run: npm run update-notion
+
+      - name: Check if there were errors
+        if: failure()
+        run: |
+          echo "❌ Notion 업데이트 중 오류가 발생했습니다."
+          echo ""
+          echo "🔍 문제 해결 방법:"
+          echo ""
+          echo "1. GitHub Secrets 확인:"
+          echo "   - Settings > Secrets and variables > Actions"
+          echo "   - NOTION_TOKEN: Notion Integration의 Internal Integration Token"
+          echo "   - NOTION_PARENT_PAGE_ID: 작업 일지가 저장될 부모 페이지의 ID"
+          echo ""
+          echo "2. Notion Integration 설정:"
+          echo "   - https://www.notion.so/my-integrations 에서 Integration 확인"
+          echo "   - 부모 페이지를 Integration과 공유해야 합니다"
+          echo "   - 페이지 우측 상단 '...' > 'Add connections' > Integration 선택"
+          echo ""
+          echo "3. 페이지 ID 확인:"
+          echo "   - Notion 페이지 URL에서 페이지 ID 추출"
+          echo "   - 예: https://www.notion.so/Workspace-2a8b9e7b9e9f80da8505e8b3f80f2bd0"
+          echo "   - 페이지 ID: 2a8b9e7b-9e9f-80da-8505-e8b3f80f2bd0 (하이픈 포함)"
+          echo ""
+          echo "4. 권한 확인:"
+          echo "   - Integration이 'Read content' 및 'Insert content' 권한이 있는지 확인"
+          exit 1
+

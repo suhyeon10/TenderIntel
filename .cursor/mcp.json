@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "supabase-sessac": {
+      "url": "https://mcp.supabase.com/mcp?project_ref=eppwaqburvobrybkmlkv"
+    },
+    "vercel-sessac": {
+      "url": "https://mcp.vercel.com",
+      "headers": {}
+    }
+  }
+}

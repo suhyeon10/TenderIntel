@@ -1,0 +1,54 @@
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+python-multipart==0.0.6
+
+# RAG Core
+langchain==1.0.5
+langchain-community==0.4.1
+langchain-core==1.0.5
+langchain-openai>=0.1.0  # langchain-core 1.0.5 호환성
+# chromadb==0.4.22  # Windows 빌드 문제로 임시 주석 처리
+# 대안: Supabase pgvector 사용 (이미 구현됨)
+
+# Document Processing
+pypdf==4.0.1
+python-docx==1.1.0
+pdfplumber==0.10.3
+pymupdf==1.23.8  # PyMuPDF - 이미지 기반 PDF 처리에 강함
+
+# OCR (스캔된 PDF 처리용 - 선택사항)
+pytesseract==0.3.10  # Tesseract OCR Python 래퍼
+pdf2image==1.16.3  # PDF를 이미지로 변환
+Pillow==10.4.0  # 이미지 처리 (pdf2image 의존성)
+
+# HWP Processing (선택)
+olefile==0.46  # HWP 바이너리 파일 처리
+requests>=2.32.5  # HWP 변환 서비스 호출용 (langchain-community 호환성)
+
+# Utilities
+python-dotenv==1.0.0
+pydantic==2.12.4
+pydantic-settings>=2.10.1  # langchain-community 호환성
+numpy==1.26.3
+
+# Supabase
+supabase==2.24.0
+websockets==15.0.1  # realtime 패키지 호환성
+
+# File Watching (선택)
+watchdog==3.0.0
+
+# Optional (더 나은 성능)
+sentence-transformers==2.3.1
+
+# 해커톤용 무료 스택 (완전 오프라인 가능)
+ollama==0.6.1  # 로컬 LLM 클라이언트 (llama3, mistral, phi3)
+langchain-ollama==1.0.0  # Ollama LLM 지원 (langchain_community.llms.Ollama 대체)
+# chromadb==0.4.22  # Windows 빌드 문제로 임시 주석 처리 - Supabase pgvector 사용
+
+# Groq LLM (즉시상담용)
+groq>=0.4.0  # Groq API 클라이언트
+
+# 프론트엔드 (해커톤용)
+streamlit==1.31.0  # 간단한 웹 UI
+

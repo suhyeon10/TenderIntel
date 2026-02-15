@@ -1,0 +1,9 @@
+{
+  "crons": [
+    {
+      "path": "/api/subscription-v2/retry-payment-schedule",
+      "schedule": "*/10 * * * *"
+    }
+  ]
+}
+
