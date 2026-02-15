@@ -54,6 +54,7 @@ class NormalizationService:
                         "job_name": job_name,
                         "tender_id": tender_id,
                         "revision_hash": revision_hash,
+                        "revision_id": existing.get("id"),
                         "status": "noop",
                         "duration_ms": duration_ms,
                     },
@@ -102,10 +103,12 @@ class NormalizationService:
                     "job_name": job_name,
                     "tender_id": tender_id,
                     "revision_hash": revision_hash,
+                    "revision_id": revision.get("id"),
                     "status": "success",
                     "duration_ms": duration_ms,
                 },
             )
+            logger.info("pipeline_metric", extra={"metric": "normalize_failures", "value": 0, "stage": "normalize", "revision_id": revision.get("id"), "tender_id": tender_id})
             return NormalizationResult(
                 tender_id=tender_id,
                 status="SUCCESS",
@@ -155,10 +158,12 @@ class NormalizationService:
                     "job_name": job_name,
                     "tender_id": tender_id,
                     "revision_hash": failed_revision_hash,
+                    "revision_id": revision.get("id"),
                     "status": "failed",
                     "duration_ms": duration_ms,
                 },
             )
+            logger.info("pipeline_metric", extra={"metric": "normalize_failures", "value": 1, "stage": "normalize", "revision_id": revision.get("id"), "tender_id": tender_id})
             return NormalizationResult(
                 tender_id=tender_id,
                 status="FAILED",

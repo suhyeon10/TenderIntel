@@ -56,6 +56,7 @@ class MatchNotifyService:
                 "job_name": job_name,
                 "tender_id": revision.tender_id,
                 "revision_hash": revision.revision_hash,
+                "revision_id": revision.tender_revision_pk,
                 "status": "success",
                 "duration_ms": duration_ms,
             },
@@ -200,6 +201,7 @@ class MatchNotifyService:
                     "payload": {**(delivery.get("payload") or {}), "status_history": status_history},
                 },
             )
+            logger.info("pipeline_metric", extra={"metric": "notify_failures", "value": 0, "stage": "notify", "revision_id": revision.tender_revision_pk, "tender_id": revision.tender_id})
             return True
         except Exception as exc:
             status_history = [*status_history, "failed"]
@@ -213,4 +215,5 @@ class MatchNotifyService:
                     "payload": {**(delivery.get("payload") or {}), "status_history": status_history},
                 },
             )
+            logger.info("pipeline_metric", extra={"metric": "notify_failures", "value": 1, "stage": "notify", "revision_id": revision.tender_revision_pk, "tender_id": revision.tender_id})
             return None

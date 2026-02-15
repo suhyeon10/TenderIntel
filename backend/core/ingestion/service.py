@@ -113,10 +113,12 @@ class IngestionService:
                         "job_name": job_name,
                         "tender_id": tender_id,
                         "revision_hash": revision_hash,
+                        "revision_id": revision.get("id"),
                         "status": "success",
                         "duration_ms": duration_ms,
                     },
                 )
+                logger.info("pipeline_metric", extra={"metric": "ingestion_success_rate", "value": 1, "stage": "ingest", "revision_id": revision.get("id"), "tender_id": tender_id})
             except Exception as exc:
                 result.failed += 1
                 idempotency_key = hashlib.sha256(f"{source}:{tender_id}".encode("utf-8")).hexdigest()
@@ -133,10 +135,12 @@ class IngestionService:
                         "job_name": job_name,
                         "tender_id": tender_id,
                         "revision_hash": revision_hash,
+                        "revision_id": None,
                         "status": "failed",
                         "duration_ms": duration_ms,
                     },
                 )
+                logger.info("pipeline_metric", extra={"metric": "ingestion_success_rate", "value": 0, "stage": "ingest", "revision_id": None, "tender_id": tender_id})
 
         return result
 
