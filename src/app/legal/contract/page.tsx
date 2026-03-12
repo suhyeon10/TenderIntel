@@ -401,7 +401,14 @@ export default function ContractAnalysisPage() {
   }
 
   // 시연용 바이패스: 미리 분석된 docId로 바로 이동
-  const handleQuickSample = (docId: string, title: string) => {
+  const handleQuickSample = async () => {
+    const latestHistoryId = history[0]?.id
+
+    if (!latestHistoryId) {
+      await handleSampleContract('intern')
+      return
+    }
+
     setIsAnalyzing(true)
     setIsQuickSample(true) // 시연용 바이패스 플래그 설정
     setAnalysisStep(-1) // 특별한 값으로 설정하여 간단한 로딩 메시지 표시
@@ -410,7 +417,7 @@ export default function ContractAnalysisPage() {
     // 짧은 로딩 시뮬레이션 (30초~1분 대신 1~2초)
     // "계약 조항 읽는 중" 같은 간단한 메시지만 보여줌
     setTimeout(() => {
-      router.push(`/legal/contract/${docId}`)
+      router.push(`/legal/contract/${latestHistoryId}`)
     }, 1500)
   }
 
@@ -867,7 +874,7 @@ export default function ContractAnalysisPage() {
                     </Button>
                     <Button
                       variant="outline"
-                      onClick={() => handleQuickSample('062ce081-c218-424c-8102-45b9089fcea3', '시연용 계약서')}
+                      onClick={() => void handleQuickSample()}
                       className="h-auto py-4 border-2 border-blue-300 hover:border-blue-500 hover:bg-blue-50 bg-blue-50/50"
                     >
                       <div className="text-left w-full">

@@ -24,11 +24,21 @@ export async function GET(
     const supabase = createClient(supabaseUrl, supabaseKey)
 
     // 분석 결과 조회 (결과가 없을 수도 있으므로 maybeSingle 사용)
-    const { data, error } = await supabase
-      .from('contract_analyses')
-      .select('*')
-      .eq('id', analysisId)
-      .maybeSingle()
+    const findAnalysis = async (column: 'id' | 'doc_id') => {
+      return supabase
+        .from('contract_analyses')
+        .select('*')
+        .eq(column, analysisId)
+        .maybeSingle()
+    }
+
+    let { data, error } = await findAnalysis('id')
+
+    if (!data && (!error || error.code === 'PGRST116')) {
+      const fallbackResult = await findAnalysis('doc_id')
+      data = fallbackResult.data
+      error = fallbackResult.error
+    }
 
     // 에러 처리 (PGRST116은 "결과 없음"을 의미하는 정상적인 에러)
     if (error) {

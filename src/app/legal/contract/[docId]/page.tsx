@@ -671,6 +671,7 @@ export default function ContractDetailPage() {
                 contractText={analysisResult.contractText}
                 issues={analysisResult.issues}
                 selectedIssueId={selectedIssueId}
+                selectedClauseId={selectedClauseId}
                 onIssueClick={setSelectedIssueId}
                 highlightedTexts={highlightedTexts}
                 clauses={clauses}  // ✨ 조항 목록 전달
@@ -702,7 +703,6 @@ export default function ContractDetailPage() {
                 selectedClauseId={selectedClauseId}
                 onClauseClick={(clauseId) => {
                   setSelectedClauseId(clauseId)
-                  // 해당 조항으로 스크롤 (나중에 구현)
                 }}
                 onCategoryClick={(category) => {
                   const categoryIssue = analysisResult.issues.find(i => i.category === category)

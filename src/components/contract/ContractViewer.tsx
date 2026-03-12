@@ -31,6 +31,7 @@ interface ContractViewerProps {
   contractText: string
   issues: LegalIssue[]
   selectedIssueId?: string
+  selectedClauseId?: string
   onIssueClick?: (issueId: string) => void
   highlightedTexts?: HighlightedText[]
   clauses?: Array<{
@@ -49,6 +50,7 @@ export function ContractViewer({
   contractText,
   issues,
   selectedIssueId,
+  selectedClauseId,
   onIssueClick,
   highlightedTexts = [],
   clauses: clausesProp = [],
@@ -477,6 +479,19 @@ export function ContractViewer({
       return () => clearTimeout(timeoutId)
     }
   }, [selectedIssueId, issues])
+
+  useEffect(() => {
+    if (!selectedClauseId || parsedClauses.length === 0) return
+
+    const matchedClause = parsedClauses.find(clause => clause.id === selectedClauseId)
+    if (!matchedClause) return
+
+    const timeoutId = setTimeout(() => {
+      scrollToClause(matchedClause.number)
+    }, 100)
+
+    return () => clearTimeout(timeoutId)
+  }, [selectedClauseId, parsedClauses])
 
   // 스크롤 진행률 계산 및 툴팁 위치 업데이트
   useEffect(() => {
