@@ -493,6 +493,7 @@ class ContractAnalysisResponseV2(BaseModel):
     contractText: str = ""  # 계약서 원문 텍스트 (기본값: 빈 문자열, Optional 제거)
     clauses: List[ClauseV2] = []  # 조항 목록 (자동 분류)
     highlightedTexts: List[HighlightedTextV2] = []  # 하이라이트된 텍스트
+    metadata: Optional[Dict[str, Any]] = Field(default_factory=dict, description="추가 메타데이터")
     createdAt: str
     fileUrl: Optional[str] = None  # Supabase Storage에 저장된 원본 파일 URL
     # 새로운 독소조항 탐지 결과 필드

@@ -201,6 +201,9 @@ async def legal_chat_agent(
     message: str = Form(..., description="사용자 질문 텍스트"),
     session_id: Optional[str] = Form(None, alias="sessionId", description="기존 legal_chat_sessions.id"),
     contract_analysis_id: Optional[str] = Form(None, alias="contractAnalysisId"),
+    selected_issue_id: Optional[str] = Form(None, alias="selectedIssueId"),
+    selected_clause_id: Optional[str] = Form(None, alias="selectedClauseId"),
+    selected_issue_json: Optional[str] = Form(None, alias="selectedIssue"),
     situation_analysis_id: Optional[str] = Form(None, alias="situationAnalysisId"),
     situation_template_key: Optional[str] = Form(None, alias="situationTemplateKey"),
     situation_form_json: Optional[str] = Form(None, alias="situationForm", description="상황 분석용 폼 데이터 JSON 문자열"),
@@ -251,6 +254,7 @@ async def legal_chat_agent(
     situation_analysis = None
     used_reports: List[UsedReportMeta] = []
     used_sources: List[UsedSourceMeta] = []
+    requested_contract_analysis_id = contract_analysis_id
     
     # 상황 폼 JSON 파싱
     situation_form: Optional[Dict[str, Any]] = None
@@ -262,6 +266,16 @@ async def legal_chat_agent(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Invalid situationForm JSON",
             )
+
+    selected_issue: Optional[Dict[str, Any]] = None
+    if selected_issue_json:
+        try:
+            selected_issue = json.loads(selected_issue_json)
+        except json.JSONDecodeError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid selectedIssue JSON",
+            )
     
     # 2-1. 계약 모드
     if mode == LegalChatMode.contract:
@@ -271,6 +285,13 @@ async def legal_chat_agent(
         
         # 파일이 있어도 새로 분석하지 않고 고정 ID 사용 (해커톤 데모용)
         # 주석 처리: 파일 업로드 시 새로 분석하는 로직
+        contract_analysis_id = requested_contract_analysis_id
+        if not contract_analysis_id and file is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="contractAnalysisId is required for contract chat",
+            )
+        logger.info(f"[Agent Chat] Contract mode requested analysis id: {contract_analysis_id}")
         """
         # 최초 요청: 파일 포함 → 분석 실행
         if file is not None:
@@ -757,6 +778,7 @@ async def legal_chat_agent(
                 query=message,
                 contract_analysis=saved_analysis,
                 legal_chunks=None,  # 자동 검색
+                selected_issue=selected_issue,
                 history_messages=history_for_agent,
             )
         else:
@@ -836,8 +858,8 @@ async def legal_chat_agent(
         chat_result = await legal_service.chat_with_context(
             query=message,
             doc_ids=[contract_analysis.id] if contract_analysis else [],
-            selected_issue_id=None,
-            selected_issue=None,
+            selected_issue_id=selected_issue_id,
+            selected_issue=selected_issue,
             analysis_summary=contract_analysis.summary if contract_analysis else (situation_analysis.summary if situation_analysis else None),
             risk_score=contract_analysis.riskScore if contract_analysis else (situation_analysis.riskScore if situation_analysis else None),
             total_issues=None,
@@ -909,8 +931,8 @@ async def legal_chat_agent(
         chat_result = await legal_service.chat_with_context(
             query=message,
             doc_ids=[contract_analysis.id] if contract_analysis else [],
-            selected_issue_id=None,
-            selected_issue=None,
+            selected_issue_id=selected_issue_id,
+            selected_issue=selected_issue,
             analysis_summary=contract_analysis.summary if contract_analysis else (situation_analysis.summary if situation_analysis else None),
             risk_score=contract_analysis.riskScore if contract_analysis else (situation_analysis.riskScore if situation_analysis else None),
             total_issues=None,

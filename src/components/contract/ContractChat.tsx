@@ -24,6 +24,7 @@ interface ContractChatProps {
   docId: string
   analysisResult: ContractAnalysisResult
   selectedIssueId?: string
+  selectedClauseId?: string
   prefilledQuestion?: string
   onQuestionPrefilled?: () => void
   externalMessage?: string
@@ -36,6 +37,7 @@ export function ContractChat({
   docId,
   analysisResult,
   selectedIssueId,
+  selectedClauseId,
   prefilledQuestion,
   onQuestionPrefilled,
   externalMessage,
@@ -43,11 +45,13 @@ export function ContractChat({
   onLoadingChange,
   onMessageCountChange,
 }: ContractChatProps) {
+  const getMessageStorageKey = (currentDocId: string) => `contract_chat_${currentDocId}`
+  const getSessionStorageKey = (currentDocId: string) => `contract_chat_session_${currentDocId}`
   // localStorage에서 메시지 로드
-  const loadMessages = (): Message[] => {
+  const loadMessages = (currentDocId: string): Message[] => {
     if (typeof window === 'undefined') return []
     try {
-      const stored = localStorage.getItem(`contract_chat_${docId}`)
+      const stored = localStorage.getItem(getMessageStorageKey(currentDocId))
       if (stored) {
         const parsed = JSON.parse(stored)
         return parsed.map((msg: any) => ({
@@ -61,24 +65,48 @@ export function ContractChat({
     return []
   }
 
+  const loadSessionId = (currentDocId: string): string | undefined => {
+    if (typeof window === 'undefined') return undefined
+    try {
+      return localStorage.getItem(getSessionStorageKey(currentDocId)) || undefined
+    } catch (error) {
+      console.error('梨꾪똿 ?몄뀡 濡쒕뱶 ?ㅽ뙣:', error)
+      return undefined
+    }
+  }
+
   // 메시지 저장
   const saveMessages = (msgs: Message[]) => {
     if (typeof window === 'undefined') return
     try {
-      localStorage.setItem(`contract_chat_${docId}`, JSON.stringify(msgs))
+      localStorage.setItem(getMessageStorageKey(docId), JSON.stringify(msgs))
     } catch (error) {
       console.error('메시지 저장 실패:', error)
     }
   }
 
-  const [messages, setMessages] = useState<Message[]>(loadMessages())
+  const saveSessionId = (nextSessionId?: string) => {
+    if (typeof window === 'undefined') return
+    try {
+      const storageKey = getSessionStorageKey(docId)
+      if (nextSessionId) {
+        localStorage.setItem(storageKey, nextSessionId)
+      } else {
+        localStorage.removeItem(storageKey)
+      }
+    } catch (error) {
+      console.error('梨꾪똿 ?몄뀡 ????ㅽ뙣:', error)
+    }
+  }
+
+  const [messages, setMessages] = useState<Message[]>(() => loadMessages(docId))
   const [inputMessage, setInputMessage] = useState('')
   const [chatLoading, setChatLoading] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const chatContainerRef = useRef<HTMLDivElement>(null)
   const [shouldAutoScroll, setShouldAutoScroll] = useState(true)
   const [isUserScrolling, setIsUserScrolling] = useState(false)
-  const [sessionId, setSessionId] = useState<string | undefined>(undefined)
+  const [sessionId, setSessionId] = useState<string | undefined>(() => loadSessionId(docId))
 
   // 분석 결과 기반 추천 질문 생성 (해커톤용 강화)
   const generateSuggestedQuestions = (): string[] => {
@@ -137,6 +165,9 @@ export function ContractChat({
   }
 
   const suggestedQuestions = generateSuggestedQuestions()
+  const selectedIssue = selectedIssueId
+    ? analysisResult.issues.find(issue => issue.id === selectedIssueId)
+    : undefined
 
   // 메시지 전송 (해커톤용 강화 - 자동 프리필 지원)
   const handleSendMessage = useCallback(async (question?: string, prefilledText?: string) => {
@@ -170,6 +201,17 @@ export function ContractChat({
         message: query,
         sessionId: sessionId,
         contractAnalysisId: docId, // 이미 분석된 계약서의 ID
+        selectedIssueId,
+        selectedClauseId,
+        selectedIssue: selectedIssue ? {
+          id: selectedIssue.id,
+          category: selectedIssue.category,
+          severity: selectedIssue.severity,
+          summary: selectedIssue.summary,
+          originalText: selectedIssue.originalText,
+          legalBasis: Array.isArray(selectedIssue.legalBasis) ? selectedIssue.legalBasis : [],
+          clauseNumber: selectedIssue.location?.clauseNumber,
+        } : undefined,
       }, userId)
       
       // 세션 ID 저장
@@ -199,7 +241,7 @@ export function ContractChat({
     } finally {
       setChatLoading(false)
     }
-  }, [docId, sessionId, inputMessage])
+  }, [docId, sessionId, inputMessage, selectedIssueId, selectedClauseId, selectedIssue])
 
   // 재시도 함수
   const handleRetry = useCallback((originalQuery: string) => {
@@ -218,15 +260,25 @@ export function ContractChat({
 
   // 초기 메시지 개수 알림
   useEffect(() => {
-    const initialMessages = loadMessages()
+    const initialMessages = loadMessages(docId)
     onMessageCountChange?.(initialMessages.length)
   }, [docId, onMessageCountChange])
 
   // 메시지가 변경될 때마다 저장
   useEffect(() => {
+    setMessages(loadMessages(docId))
+    setSessionId(loadSessionId(docId))
+    setInputMessage('')
+  }, [docId])
+
+  useEffect(() => {
     saveMessages(messages)
     onMessageCountChange?.(messages.length)
   }, [messages, docId, onMessageCountChange])
+
+  useEffect(() => {
+    saveSessionId(sessionId)
+  }, [docId, sessionId])
 
   // 외부에서 메시지 전송 요청
   useEffect(() => {

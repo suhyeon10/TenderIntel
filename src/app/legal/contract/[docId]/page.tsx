@@ -600,6 +600,7 @@ export default function ContractDetailPage() {
                     docId={docId}
                     analysisResult={analysisResult}
                     selectedIssueId={chatIssueId || selectedIssueId}
+                    selectedClauseId={selectedClauseId}
                     prefilledQuestion={prefilledQuestion}
                     onQuestionPrefilled={() => setPrefilledQuestion(undefined)}
                     externalMessage={externalMessage}

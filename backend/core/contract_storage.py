@@ -52,6 +52,7 @@ class ContractStorageService:
         contract_text: Optional[str] = None,  # 계약서 원문 텍스트
         clauses: Optional[List[Dict[str, Any]]] = None,  # 조항 목록
         highlighted_texts: Optional[List[Dict[str, Any]]] = None,  # 하이라이트된 텍스트
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> str:
         """
         계약서 분석 결과를 DB에 저장
@@ -146,7 +147,18 @@ class ContractStorageService:
             if user_id:
                 analysis_data["user_id"] = user_id
             
-            result = self.sb.table("contract_analyses").insert(analysis_data).execute()
+            if metadata:
+                analysis_data["metadata"] = metadata
+            
+            try:
+                result = self.sb.table("contract_analyses").insert(analysis_data).execute()
+            except Exception as insert_error:
+                if metadata and "metadata" in str(insert_error).lower():
+                    logger.warning("[DB 저장] contract_analyses.metadata 컬럼이 없어 metadata 없이 재시도합니다.")
+                    analysis_data.pop("metadata", None)
+                    result = self.sb.table("contract_analyses").insert(analysis_data).execute()
+                else:
+                    raise
             
             if not result.data or len(result.data) == 0:
                 raise ValueError("계약서 분석 결과 저장 실패")
@@ -345,6 +357,7 @@ class ContractStorageService:
                 "contractText": contract_text_value,  # 계약서 원문 텍스트
                 "clauses": clauses_data if isinstance(clauses_data, list) else [],  # 조항 목록
                 "highlightedTexts": highlighted_texts_data if isinstance(highlighted_texts_data, list) else [],  # 하이라이트된 텍스트
+                "metadata": analysis.get("metadata", {}) if isinstance(analysis.get("metadata", {}), dict) else {},
                 "createdAt": created_at_value,
                 "fileUrl": analysis.get("file_url") or None,  # Supabase Storage 파일 URL
             }
@@ -438,6 +451,7 @@ class ContractStorageService:
                 "contractText": analysis.get("contract_text", ""),  # 계약서 원문 텍스트
                 "clauses": clauses_data if isinstance(clauses_data, list) else [],  # 조항 목록
                 "highlightedTexts": highlighted_texts_data if isinstance(highlighted_texts_data, list) else [],  # 하이라이트된 텍스트
+                "metadata": analysis.get("metadata", {}) if isinstance(analysis.get("metadata", {}), dict) else {},
                 "createdAt": analysis.get("created_at", ""),
                 "fileUrl": analysis.get("file_url") or None,  # Supabase Storage 파일 URL
             }
