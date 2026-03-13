@@ -2,7 +2,7 @@
 
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
-import { FileText, MessageSquare, BookOpen, Home, Scale, UserCircle, LogOut, Menu, X, ChevronDown } from 'lucide-react'
+import { FileText, MessageSquare, BookOpen, Home, Scale, UserCircle, LogOut, Menu, X, ChevronDown, Bot } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { useState, useEffect, useRef } from 'react'
@@ -81,6 +81,7 @@ export default function LegalLayout({
 
   const navItems = [
     { href: '/legal', label: '홈', icon: Home },
+    { href: '/legal/agent', label: 'AI 에이전트', icon: Bot },
     { href: '/legal/assist/quick', label: '즉시상담', icon: MessageSquare },
     { href: '/legal/contract', label: '계약서 분석', icon: FileText },
     { href: '/legal/situation', label: '상황 분석', icon: MessageSquare },
