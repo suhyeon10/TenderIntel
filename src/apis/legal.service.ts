@@ -2107,6 +2107,17 @@ export interface AgentChatRequest {
   // contract 모드
   file?: File
   contractAnalysisId?: string
+  selectedIssueId?: string
+  selectedClauseId?: string
+  selectedIssue?: {
+    id?: string
+    category?: string
+    severity?: string
+    summary?: string
+    originalText?: string
+    legalBasis?: unknown[]
+    clauseNumber?: string
+  }
   // situation 모드
   situationTemplateKey?: string
   situationForm?: {
@@ -2216,6 +2227,16 @@ export const chatWithAgent = async (
       } else {
         // 첫 요청인데 file이 없으면 에러
         throw new Error('contract 모드 첫 요청 시 file이 필수입니다.')
+      }
+
+      if (request.selectedIssueId) {
+        formData.append('selectedIssueId', request.selectedIssueId)
+      }
+      if (request.selectedClauseId) {
+        formData.append('selectedClauseId', request.selectedClauseId)
+      }
+      if (request.selectedIssue) {
+        formData.append('selectedIssue', JSON.stringify(request.selectedIssue))
       }
     }
     

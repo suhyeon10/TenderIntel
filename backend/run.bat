@@ -16,7 +16,12 @@ if not exist .env (
     exit /b 1
 )
 
-REM 서버 실행
+REM 서버 실행 (PORT 환경변수나 .env에서 지정 가능)
+if defined PORT (
+    echo ⚙️  사용 중인 포트: %PORT%
+) else (
+    echo ⚙️  기본 포트 8000 사용
+)
 python main.py
 
 pause

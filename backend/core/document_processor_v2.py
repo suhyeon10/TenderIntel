@@ -465,6 +465,7 @@ class DocumentProcessor:
         self.contract_splitter = ContractArticleSplitter(
             max_article_length=int(os.getenv("CONTRACT_MAX_ARTICLE_LENGTH", "2000"))
         )
+        self._last_extraction_metadata: Dict[str, Any] = {}
     
     def _log(self, msg: str):
         """verbose 모드일 때만 로그 출력"""
@@ -481,6 +482,27 @@ class DocumentProcessor:
                     print(safe_msg.encode('utf-8', errors='replace').decode('utf-8', errors='replace'))
             else:
                 print(msg)
+
+    def _set_last_extraction_metadata(self, metadata: Dict[str, Any] | None):
+        """최근 문서 추출 메타데이터를 보관한다."""
+        self._last_extraction_metadata = metadata or {}
+
+    def get_last_extraction_metadata(self) -> Dict[str, Any]:
+        """최근 문서 추출 메타데이터를 반환한다."""
+        return dict(self._last_extraction_metadata)
+
+    def _get_pdf_page_count(self, pdf_path: str) -> int | None:
+        """가능한 범위에서 PDF 페이지 수를 계산한다."""
+        try:
+            from pypdf import PdfReader
+            return len(PdfReader(pdf_path).pages)
+        except Exception:
+            try:
+                import fitz
+                with fitz.open(pdf_path) as doc:
+                    return len(doc)
+            except Exception:
+                return None
     
     def pdf_to_text(
         self, 
@@ -504,11 +526,16 @@ class DocumentProcessor:
         
         error_messages: List[str] = []
         text = ""
+        extraction_source = "pdf_text"
+        ocr_used = False
+        page_count = self._get_pdf_page_count(pdf_path)
         
         # 1) force_ocr면 바로 OCR
         if force_ocr:
             self._log("[PDF 처리] force_ocr=True → OCR만 사용")
             text = self._extract_with_ocr(pdf_path, error_messages)
+            extraction_source = "pdf_ocr"
+            ocr_used = True
         else:
             # 2) 텍스트 기반 추출 순차 시도
             for extractor in (
@@ -538,6 +565,8 @@ class DocumentProcessor:
                         self._log("[PDF 처리] 이미지 기반 PDF로 감지됨 (텍스트 추출 결과가 너무 짧거나 의미없음) → OCR로 전환")
                         text = ""
                         continue
+                    extraction_source = "pdf_text"
+                    ocr_used = False
                     break
             
             # 3) prefer_ocr=True 이거나, 위 방법들로 실패한 경우 OCR 시도
@@ -553,10 +582,14 @@ class DocumentProcessor:
                     if not text or len(ocr_text) > len(text) * 1.2:  # OCR이 20% 이상 길면
                         self._log("[PDF 처리] OCR 결과가 더 우수하여 OCR 텍스트 채택")
                         text = ocr_text
+                        extraction_source = "pdf_ocr"
+                        ocr_used = True
                     elif self._has_digits(ocr_text, min_count=5) and not self._has_digits(text, min_count=5):
                         # OCR에 숫자가 더 많으면 OCR 채택
                         self._log("[PDF 처리] OCR 결과에 숫자가 더 많아 OCR 텍스트 채택")
                         text = ocr_text
+                        extraction_source = "pdf_ocr"
+                        ocr_used = True
         
         # 정제
         if text:
@@ -575,6 +608,54 @@ class DocumentProcessor:
             error_msg += "3. Poppler 설치 (Windows): https://github.com/oschwartz10612/poppler-windows/releases\n"
             raise ValueError(error_msg)
 
+        self._set_last_extraction_metadata({
+            "ocr_used": ocr_used,
+            "source_type": extraction_source,
+            "page_count": page_count,
+        })
+        return text
+
+    def image_to_text(self, image_path: str) -> str:
+        """이미지 파일을 OCR로 텍스트 추출한다."""
+        if not os.path.exists(image_path):
+            raise FileNotFoundError(f"이미지 파일을 찾을 수 없습니다: {image_path}")
+
+        try:
+            import pytesseract
+            from PIL import Image
+        except ImportError as e:
+            missing = str(e).split("'")[1] if "'" in str(e) else "pytesseract 또는 Pillow"
+            raise ValueError(f"이미지 OCR에 필요한 라이브러리가 없습니다: {missing}") from e
+
+        import platform
+        if platform.system() == "Windows":
+            tesseract_paths = [
+                r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+                r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+            ]
+            for tesseract_path in tesseract_paths:
+                if os.path.exists(tesseract_path):
+                    pytesseract.pytesseract.tesseract_cmd = tesseract_path
+                    break
+
+        with Image.open(image_path) as img:
+            if img.mode != "L":
+                img = img.convert("L")
+            text = pytesseract.image_to_string(
+                img,
+                lang="kor+eng",
+                config="--psm 6 -c preserve_interword_spaces=1",
+            )
+
+        text = self._clean_text(text)
+        if not text or not text.strip():
+            raise ValueError(f"이미지 파일에서 텍스트를 추출하지 못했습니다: {image_path}")
+
+        self._set_last_extraction_metadata({
+            "ocr_used": True,
+            "source_type": "image_ocr",
+            "page_count": 1,
+        })
         return text
 
     def _has_digits(self, text: str, min_count: int = 1) -> bool:
@@ -1418,6 +1499,7 @@ class DocumentProcessor:
             (text, chunks)
         """
         # 파일 타입 자동 감지
+        self._set_last_extraction_metadata({})
         if file_type is None:
             suffix = Path(file_path).suffix.lower()
             if suffix == '.pdf':
@@ -1428,6 +1510,8 @@ class DocumentProcessor:
                 file_type = 'text'
             elif suffix in ['.html', '.htm']:
                 file_type = 'html'
+            elif suffix in ['.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif', '.webp']:
+                file_type = 'image'
             else:
                 raise ValueError(f"지원하지 않는 파일 형식: {suffix}")
         
@@ -1462,8 +1546,20 @@ class DocumentProcessor:
                 raise ValueError(f"텍스트 정제 후 내용이 비어있습니다: {file_path}")
         elif file_type == "hwp":
             text = self.hwp_to_text(file_path)
+            self._set_last_extraction_metadata({
+                "ocr_used": False,
+                "source_type": "hwp_text",
+                "page_count": None,
+            })
         elif file_type == "html":
             text = self.html_to_text(file_path)
+            self._set_last_extraction_metadata({
+                "ocr_used": False,
+                "source_type": "html_text",
+                "page_count": None,
+            })
+        elif file_type == "image":
+            text = self.image_to_text(file_path)
         else:
             raise ValueError(f"지원하지 않는 파일 타입: {file_type}")
         

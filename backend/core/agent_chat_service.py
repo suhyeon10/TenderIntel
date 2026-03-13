@@ -169,6 +169,7 @@ class AgentChatService:
         query: str,
         contract_analysis: Dict[str, Any],
         legal_chunks: Optional[List[LegalGroundingChunk]] = None,
+        selected_issue: Optional[Dict[str, Any]] = None,
         history_messages: Optional[List[Dict[str, Any]]] = None,
     ) -> str:
         """
@@ -187,6 +188,11 @@ class AgentChatService:
         if not legal_chunks:
             # 계약서 분석 요약을 기반으로 검색
             search_query = f"{query} {contract_analysis.get('summary', '')[:200]}"
+            if selected_issue:
+                issue_summary = str(selected_issue.get('summary', ''))
+                issue_text = str(selected_issue.get('originalText', ''))
+                issue_category = str(selected_issue.get('category', ''))
+                search_query = f"{query} {issue_summary[:150]} {issue_text[:200]} {issue_category}".strip()
             legal_chunks = await self.legal_service._search_legal_chunks(
                 query=search_query,
                 top_k=5,
@@ -200,6 +206,7 @@ class AgentChatService:
             query=query,
             contract_analysis=contract_analysis,
             legal_chunks=legal_chunks,
+            selected_issue=selected_issue,
             history_messages=history_messages or [],
         )
         

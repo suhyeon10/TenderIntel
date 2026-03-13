@@ -96,6 +96,7 @@ def build_agent_contract_prompt(
     query: str,
     contract_analysis: Dict[str, Any],
     legal_chunks: List[Any] = None,
+    selected_issue: Dict[str, Any] = None,
     history_messages: List[Dict[str, Any]] = None,
 ) -> str:
     """
@@ -148,6 +149,21 @@ def build_agent_contract_prompt(
             issues_detail += "\n"
     
     # RAG 검색 결과 (법적 근거)
+    selected_issue_context = ""
+    if selected_issue:
+        selected_issue_context = f"""
+## 현재 선택된 이슈
+
+- ID: {selected_issue.get('id', '')}
+- 카테고리: {selected_issue.get('category', 'unknown')}
+- 위험도: {selected_issue.get('severity', 'medium')}
+- 요약: {selected_issue.get('summary', '')[:300]}
+- 조항 번호: {selected_issue.get('clauseNumber', '')}
+- 조항 원문: {selected_issue.get('originalText', '')[:500]}
+
+답변은 이 이슈를 우선 기준으로 작성하세요.
+"""
+
     rag_context = ""
     legal_refs = []
     if legal_chunks:
@@ -206,6 +222,7 @@ def build_agent_contract_prompt(
         prompt = f"""당신은 계약서 분석 결과를 바탕으로 사용자에게 계약서 분석 리포트를 제공하는 법률 상담 AI입니다.
 
 {analysis_summary}
+{selected_issue_context}
 {issues_detail}
 {rag_context}
 
@@ -288,6 +305,7 @@ def build_agent_contract_prompt(
         prompt = f"""당신은 계약서 분석 결과를 바탕으로 사용자의 질문에 답변하는 법률 상담 AI입니다.
 
 {analysis_summary}
+{selected_issue_context}
 {issues_detail}
 {rag_context}
 

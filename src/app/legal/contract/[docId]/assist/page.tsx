@@ -6,6 +6,7 @@ import { Loader2, AlertCircle, ArrowLeft, MessageSquare, FileText, Copy, Phone }
 import { ContractChat } from '@/components/contract/ContractChat'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { getContractAnalysisV2 } from '@/apis/legal.service'
 import { cn } from '@/lib/utils'
 import type { LegalIssue, ContractAnalysisResult } from '@/types/legal'
 
@@ -50,6 +51,21 @@ export default function ContractAssistPage() {
   const [chatLoading, setChatLoading] = useState(false)
   const [messageCount, setMessageCount] = useState(0)
 
+  const normalizeAnalysisData = (data: any) => {
+    if (!data) return null
+
+    return {
+      ...data,
+      issues: Array.isArray(data.issues) ? data.issues : [],
+      recommendations: Array.isArray(data.recommendations) ? data.recommendations : [],
+      summary: data.summary || '',
+      risk_score: data.risk_score ?? data.riskScore ?? 0,
+      riskScore: data.riskScore ?? data.risk_score ?? 0,
+      contractText: data.contractText || data.contract_text || '',
+      contract_text: data.contract_text || data.contractText || '',
+    }
+  }
+
   // 분석 결과 로드
   useEffect(() => {
     const loadAnalysis = async () => {
@@ -62,9 +78,8 @@ export default function ContractAssistPage() {
         // DB에서 분석 결과 가져오기 시도
         let dbData: any = null
         try {
-          const response = await fetch(`/api/legal/contract-analysis/${docId}`)
-          if (response.ok) {
-            dbData = await response.json()
+          if (!docId.startsWith('temp-')) {
+            dbData = await getContractAnalysisV2(docId)
           }
         } catch (dbError) {
           console.warn('DB 조회 실패, 로컬 스토리지 확인:', dbError)
@@ -74,21 +89,23 @@ export default function ContractAssistPage() {
         const storedData = localStorage.getItem(`contract_analysis_${docId}`)
         const localData = storedData ? JSON.parse(storedData) : null
         
-        const normalizedData = dbData || localData
+        const normalizedData = normalizeAnalysisData(dbData || localData)
         
         if (normalizedData) {
           const validIssues = (normalizedData.issues || []).filter((issue: any) => {
-            const name = (issue.name || '').toLowerCase()
+            const name = (issue.summary || issue.name || '').toLowerCase()
+            const description = (issue.explanation || issue.description || issue.originalText || '').trim()
             return !name.includes('분석 실패') && 
                    !name.includes('llm 분석') && 
                    !name.includes('비활성화') &&
-                   issue.name && 
-                   issue.description
+                   !!name && 
+                   !!description
           })
           
           const issues: LegalIssue[] = validIssues.map((issue: any, index: number) => {
-            const issueName = (issue.name || '').toLowerCase()
-            const issueDesc = (issue.description || '').toLowerCase()
+            const issueName = (issue.summary || issue.name || '').toLowerCase()
+            const issueDescription = issue.explanation || issue.description || issue.originalText || ''
+            const issueDesc = issueDescription.toLowerCase()
             const searchText = `${issueName} ${issueDesc}`
 
             let category: string = 'other'
@@ -106,7 +123,7 @@ export default function ContractAssistPage() {
               category = 'harassment'
             }
 
-            const clauseMatch = issue.description?.match(/제\s*(\d+)\s*조/)
+            const clauseMatch = issueDescription?.match(/제\s*(\d+)\s*조/)
             const location = {
               clauseNumber: clauseMatch ? clauseMatch[1] : undefined,
               startIndex: issue.start_index ?? issue.startIndex,
@@ -126,18 +143,32 @@ export default function ContractAssistPage() {
               return recTitle.includes(issueName) || issueName.includes(recTitle)
             })
 
+            const legalBasis = Array.isArray(issue.legalBasis)
+              ? issue.legalBasis
+              : Array.isArray(issue.legal_basis)
+                ? issue.legal_basis
+                : []
+
+            const suggestedQuestions = Array.isArray(issue.suggested_questions)
+              ? issue.suggested_questions
+              : Array.isArray(issue.suggestedQuestions)
+                ? issue.suggestedQuestions
+                : Array.isArray(relatedRec?.steps)
+                  ? relatedRec.steps
+                  : []
+
             return {
               id: `issue-${index}`,
               category: category as any,
               severity: (issue.severity || 'medium').toLowerCase() as 'low' | 'medium' | 'high',
-              summary: issue.name || issue.description?.substring(0, 100) || '문제 조항 발견',
+              summary: issue.summary || issue.name || issueDescription?.substring(0, 100) || '문제 조항 발견',
               location,
               metrics,
-              originalText: issue.description || issue.name || '',
-              suggestedText: issue.suggested_text ?? issue.suggestedText ?? relatedRec?.description,
-              rationale: issue.rationale ?? relatedRec?.description,
-              legalBasis: Array.isArray(issue.legal_basis) ? issue.legal_basis : [],
-              suggestedQuestions: issue.suggested_questions ?? issue.suggestedQuestions ?? relatedRec?.steps ?? [],
+              originalText: issue.originalText || issueDescription || issue.summary || issue.name || '',
+              suggestedText: issue.suggestedRevision ?? issue.suggested_text ?? issue.suggestedText ?? relatedRec?.description,
+              rationale: issue.explanation ?? issue.rationale ?? relatedRec?.description,
+              legalBasis,
+              suggestedQuestions,
             } as LegalIssue
           })
 
@@ -147,7 +178,7 @@ export default function ContractAssistPage() {
             contractText,
             issues,
             summary: normalizedData.summary || '',
-            riskScore: normalizedData.risk_score || 0,
+            riskScore: normalizedData.risk_score ?? normalizedData.riskScore ?? 0,
             totalIssues: issues.length,
             highRiskCount: issues.filter(i => i.severity === 'high').length,
             mediumRiskCount: issues.filter(i => i.severity === 'medium').length,

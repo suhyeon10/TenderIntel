@@ -221,6 +221,7 @@ async def analyze_contract(
             file_type=None, 
             mode="contract"
         )
+        extraction_metadata = processor.get_last_extraction_metadata()
         
         # extracted_text 추출 확인 로깅
         logger.info(f"[계약서 분석] 텍스트 추출 완료: extracted_text 길이={len(extracted_text) if extracted_text else 0}, 미리보기={extracted_text[:100] if extracted_text else '(없음)'}")
@@ -857,6 +858,7 @@ async def analyze_contract(
             contractText=contract_text_value,  # 계약서 원문 텍스트 포함 (None이면 빈 문자열)
             clauses=clauses,  # 조항 목록
             highlightedTexts=highlighted_texts,  # 하이라이트된 텍스트
+            metadata=extraction_metadata,
             createdAt=datetime.utcnow().isoformat() + "Z",
             # 새로운 독소조항 탐지 필드
             oneLineSummary=one_line_summary,
@@ -949,6 +951,7 @@ async def analyze_contract(
                 retrieved_contexts=retrieved_contexts,
                 issues=issues_for_db,
                 user_id=x_user_id,
+                metadata=extraction_metadata,
                 contract_text=extracted_text,  # 계약서 원문 텍스트 저장
                 clauses=clauses_for_db,  # 조항 목록 저장
                 highlighted_texts=highlighted_texts_for_db,  # 하이라이트된 텍스트 저장
