@@ -478,7 +478,7 @@ return LegalChatAgentResponse(
 
 **목적**: 대화 이력 유지 및 컨텍스트 관리
 
-**저장 위치**: `legal_chat_sessions` 테이블
+**저장 위치**: `linkus_legal_chat_sessions` 테이블
 
 **주요 필드**:
 - `id`: 세션 ID (UUID)
@@ -486,7 +486,7 @@ return LegalChatAgentResponse(
 - `created_at`: 생성 시간
 - `updated_at`: 최종 업데이트 시간
 
-**메시지 저장**: `legal_chat_messages` 테이블
+**메시지 저장**: `linkus_legal_chat_messages` 테이블
 - 최근 30개만 컨텍스트로 사용
 
 ---
@@ -520,13 +520,13 @@ return LegalChatAgentResponse(
 [4] 계약서 청킹 및 벡터 저장
     - processor.to_contract_chunks()
     - 임베딩 생성 (BAAI/bge-m3)
-    - contract_chunks 테이블에 저장
+    - linkus_legal_contract_chunks 테이블에 저장
     ↓
 [5] Dual RAG 검색 (병렬 실행)
-    ├─ 계약서 내부 검색 (contract_chunks)
+    ├─ 계약서 내부 검색 (linkus_legal_contract_chunks)
     │  - 벡터 유사도 검색 (top_k=5)
     │  - 조항 번호 기반 boosting
-    └─ 외부 법령 검색 (legal_chunks)
+    └─ 외부 법령 검색 (linkus_legal_legal_chunks)
        - 법령/가이드/케이스 검색 (top_k=8)
        - 타입 다양성 확보 (law, manual, case, standard_contract)
     ↓
@@ -545,8 +545,8 @@ return LegalChatAgentResponse(
     - issues 배열 구성
     ↓
 [9] DB 저장
-    - contract_analyses 테이블
-    - contract_issues 테이블
+    - linkus_legal_contract_analyses 테이블
+    - linkus_legal_contract_issues 테이블
     ↓
 [10] 응답 반환
     - ContractAnalysisResponseV2 형식
@@ -673,7 +673,7 @@ if not extracted_text or extracted_text.strip() == "":
    embeddings = await asyncio.to_thread(generator.embed, chunk_texts)
    ```
 
-3. **contract_chunks 테이블에 저장**
+3. **linkus_legal_contract_chunks 테이블에 저장**
    ```python
    vector_store.bulk_upsert_contract_chunks(
        contract_id=doc_id,
@@ -683,7 +683,7 @@ if not extracted_text or extracted_text.strip() == "":
 
 **용도**: Dual RAG의 계약서 내부 검색에 사용
 
-**저장 위치**: `contract_chunks` 테이블
+**저장 위치**: `linkus_legal_contract_chunks` 테이블
 
 ---
 
@@ -699,7 +699,7 @@ query = self._build_query_from_contract(extracted_text, description)
 # 계약서 앞부분 2000자 또는 조항 제목만 사용
 ```
 
-**5-2. 계약서 내부 검색** (contract_chunks)
+**5-2. 계약서 내부 검색** (linkus_legal_contract_chunks)
 - `doc_id`가 있으면 계약서 내부 청크 검색
 - 벡터 유사도 검색 (top_k=5)
 - 조항 번호 기반 boosting 지원
@@ -714,7 +714,7 @@ if doc_id:
     )
 ```
 
-**5-3. 외부 법령 검색** (legal_chunks)
+**5-3. 외부 법령 검색** (linkus_legal_legal_chunks)
 - 법령/가이드/케이스 검색 (top_k=8)
 - source_type: `law`, `manual`, `case`, `standard_contract`
 - 타입 다양성 확보:
@@ -874,7 +874,7 @@ for issue in result.issues:
 
 **처리 내용**:
 
-**9-1. contract_analyses 테이블 저장**
+**9-1. linkus_legal_contract_analyses 테이블 저장**
 ```python
 await storage_service.save_contract_analysis(
     doc_id=doc_id,
@@ -902,7 +902,7 @@ await storage_service.save_contract_analysis(
 - `sections`: 영역별 점수 (JSONB)
 - `retrieved_contexts`: RAG 검색 결과 (JSONB)
 
-**9-2. contract_issues 테이블 저장** (선택적)
+**9-2. linkus_legal_contract_issues 테이블 저장** (선택적)
 - 각 이슈별로 별도 테이블에 저장 가능
 
 ---
@@ -968,7 +968,7 @@ await storage_service.save_contract_analysis(
 
 **3. 비동기 처리**
 - 임베딩 생성: `asyncio.to_thread()`
-- contract_chunks 저장 후 분석 시작 (Race condition 방지)
+- linkus_legal_contract_chunks 저장 후 분석 시작 (Race condition 방지)
 
 **4. 임베딩 캐싱**
 - LRU 캐시 사용 (`LRUEmbeddingCache`)
@@ -984,7 +984,7 @@ await storage_service.save_contract_analysis(
 **2. 조항 추출 실패**
 - `clauses`가 비어있으면 전체를 하나의 clause로 생성
 
-**3. contract_chunks 저장 실패**
+**3. linkus_legal_contract_chunks 저장 실패**
 - 경고 로그만 남기고 분석 계속 진행
 - `doc_id=None`으로 전달하여 내부 검색 비활성화
 
@@ -998,7 +998,7 @@ await storage_service.save_contract_analysis(
 
 ---
 
-**저장 위치**: `contract_analyses` 테이블
+**저장 위치**: `linkus_legal_contract_analyses` 테이블
 
 ---
 
@@ -1027,7 +1027,7 @@ prepare_query → classify_situation → filter_rules → retrieve_guides
    - organizations: 관련 기관
 6. **merge_output**: 최종 출력 병합
 
-**저장 위치**: `situation_analyses` 테이블
+**저장 위치**: `linkus_legal_situation_analyses` 테이블
 
 ---
 
@@ -1075,7 +1075,7 @@ prepare_query → classify_situation → filter_rules → retrieve_guides
 | **첫 요청 입력** | message | message + file | message + situationForm |
 | **후속 요청 입력** | message + sessionId | message + sessionId + contractAnalysisId | message + sessionId + situationAnalysisId |
 | **분석 실행** | ❌ | ✅ (계약서 분석) | ✅ (상황 분석) |
-| **분석 저장** | ❌ | ✅ (contract_analyses) | ✅ (situation_analyses) |
+| **분석 저장** | ❌ | ✅ (linkus_legal_contract_analyses) | ✅ (linkus_legal_situation_analyses) |
 | **컨텍스트 타입** | "none" | "contract" | "situation" |
 | **RAG 검색** | ✅ (외부 법령만) | ✅ (계약서 내부 + 외부 법령) | ✅ (외부 법령만) |
 | **대화 히스토리** | ✅ | ✅ | ✅ |

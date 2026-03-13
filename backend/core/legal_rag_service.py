@@ -449,6 +449,244 @@ class LegalRAGService:
         
         return result
 
+    # ----- 계약서 챗 단계형 파이프라인 (연구용 멀티에이전트 뼈대) -----
+
+    async def _run_issue_agent(
+        self,
+        query: str,
+        selected_issue_id: Optional[str] = None,
+        selected_issue: Optional[dict] = None,
+        selected_clause_id: Optional[str] = None,
+        analysis_summary: Optional[str] = None,
+    ) -> dict:
+        """
+        이슈 에이전트: 사용자 질문을 target_issue, target_clause, user_intent, needed_sources로 구조화.
+        선택 이슈가 있으면 해당 이슈 중심으로 수렴; 없으면 질문에서 추론.
+        """
+        out = {
+            "target_issue_id": selected_issue_id,
+            "target_clause_id": selected_clause_id,
+            "selected_issue": selected_issue,
+            "query": query,
+            "target_issue": None,
+            "target_clause": None,
+            "user_intent": None,
+            "needed_sources": ["contract_clause", "law"],
+        }
+        if selected_issue:
+            out["target_issue"] = selected_issue.get("summary") or selected_issue.get("id") or ""
+            out["target_clause"] = selected_issue.get("clauseId") or selected_issue.get("clause_id") or selected_clause_id or ""
+
+        if not self.generator.disable_llm and query.strip():
+            try:
+                from core.agent_prompts import (
+                    ISSUE_AGENT_SYSTEM,
+                    build_issue_agent_prompt,
+                    parse_issue_agent_output,
+                )
+                prompt = build_issue_agent_prompt(
+                    query=query,
+                    selected_issue=selected_issue,
+                    selected_clause_id=selected_clause_id,
+                    analysis_summary=analysis_summary,
+                )
+                response_text = await self.generator.generate(
+                    prompt=prompt,
+                    system_role=ISSUE_AGENT_SYSTEM,
+                    max_output_tokens=256,
+                )
+                parsed = parse_issue_agent_output((response_text or "").strip())
+                if parsed:
+                    out["target_issue"] = out["target_issue"] or parsed.get("target_issue")
+                    out["target_clause"] = out["target_clause"] or parsed.get("target_clause")
+                    out["user_intent"] = parsed.get("user_intent")
+                    if parsed.get("needed_sources"):
+                        out["needed_sources"] = parsed["needed_sources"]
+                    logger.info(
+                        f"[chat] _run_issue_agent: target_issue={out.get('target_issue')}, "
+                        f"user_intent={out.get('user_intent')}, needed_sources={out.get('needed_sources')}"
+                    )
+            except Exception as e:
+                logger.warning(f"[chat] _run_issue_agent LLM fallback: {e}")
+        else:
+            logger.info(f"[chat] _run_issue_agent (no LLM): target_issue_id={selected_issue_id}, target_clause_id={selected_clause_id}")
+        return out
+
+    async def _run_retrieval_agent(
+        self,
+        query: str,
+        doc_ids: Optional[List[str]] = None,
+        issue_agent_output: Optional[dict] = None,
+        top_k: int = 8,
+    ) -> dict:
+        """
+        검색 에이전트: 계약서 원문 + 법령/표준계약서 검색.
+        Returns: contract_chunks, legal_chunks, legal_chunks_raw, retrieved_source_count
+        """
+        query_embedding = await self._get_embedding(query)
+        selected_issue = (issue_agent_output or {}).get("selected_issue")
+
+        async def search_contract():
+            if doc_ids and len(doc_ids) > 0:
+                doc_id = doc_ids[0]
+                boost_article = None
+                if selected_issue:
+                    boost_article = selected_issue.get("article_number")
+                    if isinstance(boost_article, str):
+                        import re
+                        match = re.search(r"(\d+)", str(boost_article))
+                        boost_article = int(match.group(1)) if match else None
+                    elif not isinstance(boost_article, int):
+                        boost_article = None
+                return self.vector_store.search_similar_contract_chunks(
+                    contract_id=doc_id,
+                    query_embedding=query_embedding,
+                    top_k=3,
+                    boost_article=boost_article,
+                    boost_factor=1.5,
+                )
+            return []
+
+        async def search_legal():
+            # 이슈 에이전트 출력 기반 검색 쿼리: 선택 이슈 또는 user_intent + target_issue
+            issue_category = None
+            search_query = query
+            if selected_issue:
+                search_query = self._build_query_from_issue(selected_issue)
+                issue_category = selected_issue.get("category")
+            else:
+                user_intent = (issue_agent_output or {}).get("user_intent")
+                target_issue = (issue_agent_output or {}).get("target_issue")
+                if user_intent or target_issue:
+                    search_query = " ".join(filter(None, [query, user_intent, target_issue]))[:500]
+            return await self._search_legal_chunks(
+                query=search_query,
+                top_k=top_k,
+                category=issue_category,
+                ensure_diversity=True,
+            )
+
+        contract_chunks, legal_chunks_raw = await asyncio.gather(
+            search_contract(),
+            search_legal(),
+            return_exceptions=False,
+        )
+        legal_chunks = []
+        sources_structured = []
+        for chunk in legal_chunks_raw:
+            chunk_dict = {
+                "id": chunk.source_id,
+                "source_type": chunk.source_type,
+                "title": chunk.title,
+                "content": chunk.snippet,
+                "snippet": chunk.snippet,
+                "score": chunk.score,
+                "external_id": getattr(chunk, "external_id", None),
+                "externalId": getattr(chunk, "external_id", None),
+            }
+            if hasattr(chunk, "metadata") and chunk.metadata:
+                chunk_dict["metadata"] = chunk.metadata
+            legal_chunks.append(chunk_dict)
+            sources_structured.append({
+                "type": chunk.source_type or "law",
+                "title": chunk.title,
+                "snippet": (chunk.snippet or "")[:300],
+                "score": chunk.score,
+                "source_id": chunk.source_id,
+                "external_id": getattr(chunk, "external_id", None),
+            })
+
+        for c in contract_chunks:
+            sources_structured.append({
+                "type": "contract",
+                "title": f"제{c.get('article_number', '')}조",
+                "snippet": (c.get("content") or c.get("snippet") or "")[:300],
+                "score": c.get("score"),
+                "source_id": c.get("id"),
+                "article_number": c.get("article_number"),
+            })
+
+        return {
+            "contract_chunks": contract_chunks,
+            "legal_chunks": legal_chunks,
+            "legal_chunks_raw": legal_chunks_raw,
+            "retrieved_source_count": len(contract_chunks) + len(legal_chunks),
+            "sources": sources_structured,
+        }
+
+    async def _run_draft_agent(
+        self,
+        query: str,
+        retrieval_result: dict,
+        selected_issue: Optional[dict] = None,
+        analysis_summary: Optional[str] = None,
+        risk_score: Optional[int] = None,
+        total_issues: Optional[int] = None,
+        context_type: Optional[str] = None,
+        context_data: Optional[dict] = None,
+    ) -> str:
+        """드래프트 에이전트: 검색 결과로 답변 초안 생성."""
+        contract_chunks = retrieval_result.get("contract_chunks", [])
+        legal_chunks_raw = retrieval_result.get("legal_chunks_raw", [])
+        return await self._llm_chat_response(
+            query=query,
+            contract_chunks=contract_chunks,
+            legal_chunks=legal_chunks_raw,
+            selected_issue=selected_issue,
+            analysis_summary=analysis_summary,
+            risk_score=risk_score,
+            total_issues=total_issues,
+            context_type=context_type,
+            context_data=context_data,
+        )
+
+    async def _run_light_verifier(
+        self,
+        draft_answer: str,
+        query: str,
+        retrieval_result: Optional[dict] = None,
+    ) -> tuple[str, str]:
+        """
+        경량 검증기: 초안 검증. supported | weak_support | unsupported.
+        weak_support/unsupported 시 보수적 문장 추가.
+        Returns: (final_answer, verification_status)
+        """
+        status = "skipped"
+        if self.generator.disable_llm or not (query.strip() and draft_answer.strip()):
+            logger.info("[chat] _run_light_verifier: skipped (no LLM or empty input)")
+            return draft_answer, status
+
+        try:
+            from core.agent_prompts import (
+                VERIFIER_SYSTEM,
+                build_verifier_prompt,
+                parse_verifier_output,
+            )
+            sources = (retrieval_result or {}).get("sources", [])
+            sources_summary = "\n".join(
+                f"- {s.get('type', '')}: {s.get('title', '')} ({s.get('snippet', '')[:80]}...)"
+                for s in sources[:5]
+            )
+            prompt = build_verifier_prompt(query=query, draft_answer=draft_answer, sources_summary=sources_summary)
+            response_text = await self.generator.generate(
+                prompt=prompt,
+                system_role=VERIFIER_SYSTEM,
+                max_output_tokens=128,
+            )
+            parsed = parse_verifier_output((response_text or "").strip())
+            if parsed and parsed.get("status") in ("supported", "weak_support", "unsupported"):
+                status = parsed["status"]
+                logger.info(f"[chat] _run_light_verifier: status={status}, reason={parsed.get('reason', '')[:100]}")
+                if status in ("weak_support", "unsupported"):
+                    disclaimer = "\n\n※ 위 답변은 제시된 자료만으로는 완전히 뒷받침되지 않을 수 있으니, 중요 결정 전 전문가 상담을 권합니다."
+                    if disclaimer.strip() not in draft_answer:
+                        return draft_answer + disclaimer, status
+            else:
+                logger.warning("[chat] _run_light_verifier: parse failed or invalid status, passing through")
+        except Exception as e:
+            logger.warning(f"[chat] _run_light_verifier exception: {e}")
+        return draft_answer, status
+
     # 3) 법률 상담 챗 (컨텍스트 기반)
     async def chat_with_context(
         self,
@@ -464,114 +702,34 @@ class LegalRAGService:
         context_data: Optional[dict] = None,
     ) -> dict:
         """
-        법률 상담 챗 (컨텍스트 지원)
-        
-        Args:
-            query: 사용자 질문
-            doc_ids: 계약서 문서 ID 목록
-            selected_issue_id: 선택된 이슈 ID
-            selected_issue: 선택된 이슈 정보
-            analysis_summary: 분석 요약
-            risk_score: 위험도 점수
-            total_issues: 총 이슈 개수
-            top_k: RAG 검색 결과 개수
-            context_type: 컨텍스트 타입 ('none' | 'situation' | 'contract')
-            context_data: 컨텍스트 데이터 (상황 분석 또는 계약서 분석 리포트)
-        
-        Returns:
-            {
-                "answer": str,  # 마크다운 형식 답변
-                "markdown": str,
-                "query": str,
-                "used_chunks": List[dict]
-            }
+        법률 상담 챗 (컨텍스트 지원).
+        내부적으로 단계형 파이프라인 사용: issue → retrieval → draft → verifier.
         """
-        # 1. Dual RAG 검색: 내 계약서 + 외부 법령
-        # 같은 쿼리를 사용하므로 임베딩을 한 번만 생성하고 재사용
-        query_embedding = await self._get_embedding(query)
-        
-        contract_chunks = []
-        legal_chunks = []
-        
-        # 1-1. 계약서 내부 검색 (doc_ids가 있는 경우)
-        async def search_contract_with_embedding():
-            if doc_ids and len(doc_ids) > 0:
-                doc_id = doc_ids[0]
-                # Issue 기반 boosting
-                boost_article = None
-                if selected_issue:
-                    boost_article = selected_issue.get("article_number")
-                    if isinstance(boost_article, str):
-                        import re
-                        match = re.search(r'(\d+)', str(boost_article))
-                        if match:
-                            boost_article = int(match.group(1))
-                        else:
-                            boost_article = None
-                    elif not isinstance(boost_article, int):
-                        boost_article = None
-                
-                return self.vector_store.search_similar_contract_chunks(
-                    contract_id=doc_id,
-                    query_embedding=query_embedding,
-                    top_k=3,
-                    boost_article=boost_article,
-                    boost_factor=1.5
-                )
-            return []
-        
-        # 1-2. 외부 법령 검색
-        # selected_issue가 있으면 이슈 기반 쿼리 사용
-        async def search_legal_with_embedding():
-            if selected_issue:
-                # 이슈 중심 쿼리 생성
-                issue_query = self._build_query_from_issue(selected_issue)
-                issue_category = selected_issue.get("category")
-                # 이슈 기반 검색 (타입 다양성 확보)
-                return await self._search_legal_chunks(
-                    query=issue_query,
-                    top_k=top_k,
-                    category=issue_category,
-                    ensure_diversity=True,
-                )
-            else:
-                # 일반 쿼리 검색
-                return await self._search_legal_chunks(
-                    query=query,
-                    top_k=top_k,
-                    category=None,
-                    ensure_diversity=True,
-                )
-        
-        # 병렬 검색
-        contract_chunks, legal_chunks_raw = await asyncio.gather(
-            search_contract_with_embedding(),
-            search_legal_with_embedding(),
-            return_exceptions=False
-        )
-        # legal_chunks_raw는 LegalGroundingChunk 객체이므로 metadata 포함
-        legal_chunks = []
-        for chunk in legal_chunks_raw:
-            chunk_dict = {
-                "id": chunk.source_id,
-                "source_type": chunk.source_type,
-                "title": chunk.title,
-                "content": chunk.snippet,
-                "snippet": chunk.snippet,
-                "score": chunk.score,
-                "external_id": getattr(chunk, "external_id", None),
-                "externalId": getattr(chunk, "external_id", None),
-            }
-            # metadata 추가 (LegalGroundingChunk 객체에 metadata 필드가 있으면 사용)
-            if hasattr(chunk, "metadata") and chunk.metadata:
-                chunk_dict["metadata"] = chunk.metadata
-            legal_chunks.append(chunk_dict)
-        
-        # 2. LLM으로 답변 생성 (컨텍스트 포함)
-        answer = await self._llm_chat_response(
+        selected_clause_id = (selected_issue or {}).get("clauseId") or (selected_issue or {}).get("clause_id")
+
+        # 1) 이슈 에이전트 (스텁)
+        issue_agent_output = await self._run_issue_agent(
             query=query,
-            contract_chunks=contract_chunks,
-            legal_chunks=legal_chunks_raw,
+            selected_issue_id=selected_issue_id,
+            selected_issue=selected_issue,
+            selected_clause_id=selected_clause_id,
+            analysis_summary=analysis_summary,
+        )
+
+        # 2) 검색 에이전트
+        retrieval_result = await self._run_retrieval_agent(
+            query=query,
+            doc_ids=doc_ids,
+            issue_agent_output=issue_agent_output,
+            top_k=top_k,
+        )
+        contract_chunks = retrieval_result["contract_chunks"]
+        legal_chunks = retrieval_result["legal_chunks"]
+
+        # 3) 드래프트 에이전트
+        draft = await self._run_draft_agent(
+            query=query,
+            retrieval_result=retrieval_result,
             selected_issue=selected_issue,
             analysis_summary=analysis_summary,
             risk_score=risk_score,
@@ -579,15 +737,55 @@ class LegalRAGService:
             context_type=context_type,
             context_data=context_data,
         )
-        
+
+        # 4) 경량 검증기 (스텁)
+        answer, verification_status = await self._run_light_verifier(
+            draft_answer=draft,
+            query=query,
+            retrieval_result=retrieval_result,
+        )
+        logger.info(f"[chat] pipeline: verification_status={verification_status}, retrieved_sources={retrieval_result.get('retrieved_source_count', 0)}")
+
+        contract_doc_meta = (context_data.get("metadata") or {}) if context_data and context_data.get("type") == "contract" else {}
+        used_contract = []
+        for c in contract_chunks:
+            item = dict(c)
+            if contract_doc_meta:
+                item["document_source_type"] = contract_doc_meta.get("source_type")
+                item["ocr_used"] = contract_doc_meta.get("ocr_used")
+            used_contract.append(item)
+        used_legal = []
+        for c in legal_chunks:
+            item = dict(c)
+            item["document_source_type"] = item.get("source_type")
+            used_legal.append(item)
+
+        contract_doc_meta = context_data.get("metadata", {}) if context_data and context_data.get("type") == "contract" else {}
+        trace = {
+            "selected_issue_id": selected_issue_id,
+            "selected_clause_id": selected_clause_id,
+            "ocr_used": contract_doc_meta.get("ocr_used"),
+            "source_type": contract_doc_meta.get("source_type"),
+            "issue_agent_output": issue_agent_output,
+            "retrieved_source_count": retrieval_result.get("retrieved_source_count", 0),
+            "verification_status": verification_status,
+        }
+        logger.info(
+            "[chat] trace: selected_issue_id=%s, retrieved_source_count=%s, verification_status=%s",
+            trace.get("selected_issue_id"),
+            trace.get("retrieved_source_count"),
+            trace.get("verification_status"),
+        )
         return {
             "answer": answer,
             "markdown": answer,
             "query": query,
             "used_chunks": {
-                "contract": contract_chunks,
-                "legal": legal_chunks
+                "contract": used_contract,
+                "legal": used_legal,
             },
+            "sources": retrieval_result.get("sources", []),
+            "trace": trace,
         }
 
     # 4) 시나리오/케이스 검색
@@ -1028,50 +1226,10 @@ class LegalRAGService:
         
         return "\n\n".join(query_parts)
     
-    async def _search_legal_chunks(
-        self,
-        query: str,
-        top_k: int = 8,
-        category: Optional[str] = None,
-        ensure_diversity: bool = True,
-    ) -> List[LegalGroundingChunk]:
-        """
-        벡터스토어 + 메타데이터로
-        - laws
-        - manuals
-        - cases
-        섞어서 검색 (새 스키마).
-        
-        Args:
-            query: 검색 쿼리
-            top_k: 반환할 최대 개수
-            category: 이슈 카테고리 (필터링용, 예: "wage", "working_hours")
-            ensure_diversity: 타입 다양성 확보 여부 (상위 20개에서 source_type별 quota 채워서 선정)
-        """
-        # 쿼리 임베딩 생성 (캐싱 지원)
-        query_embedding = await self._get_embedding(query)
-        
-        # 필터 구성 (category가 있으면 metadata에서 topic_main 필터링)
-        filters = None
-        if category:
-            # category를 topic_main으로 매핑
-            # category 예: "wage", "working_hours", "job_stability", "dismissal", "payment", "ip", "nda", "non_compete", "liability", "dispute"
-            # topic_main은 legal_chunks의 metadata JSONB 필드에 저장되어 있음
-            filters = {"topic_main": category}
-        
-        # 타입 다양성을 위해 상위 20개를 먼저 가져옴 (RPC에서 더 많은 후보를 받아서 Python에서 다양성 확보)
-        candidate_top_k = 20 if ensure_diversity else top_k
-        
-        # 벡터 검색 (RPC 함수 사용)
-        rows = self.vector_store.search_similar_legal_chunks(
-            query_embedding=query_embedding,
-            top_k=candidate_top_k,  # 타입 다양성을 위해 20개 후보를 받음
-            filters=filters
-        )
-
+    def _rows_to_grounding_chunks(self, rows: List[Dict[str, Any]]) -> List[LegalGroundingChunk]:
+        """RPC/DB 검색 결과 행을 LegalGroundingChunk 리스트로 변환."""
         results: List[LegalGroundingChunk] = []
         for r in rows:
-            # 새 스키마에서 source_type은 직접 컬럼
             source_type = r.get("source_type", "law")
             title = r.get("title", "제목 없음")
             content = r.get("content", "")
@@ -1079,27 +1237,19 @@ class LegalRAGService:
             file_path = r.get("file_path", None)
             external_id = r.get("external_id", None)
             chunk_index = r.get("chunk_index", None)
-            
-            # file_path가 없으면 external_id로 생성
             if not file_path and external_id:
                 file_path = self._build_file_path(source_type, external_id)
-            
-            # 스토리지 파일 URL 생성
             file_url = None
             if external_id:
                 try:
                     file_url = self.vector_store.get_storage_file_url(
                         external_id=external_id,
                         source_type=source_type,
-                        expires_in=3600  # 1시간
+                        expires_in=3600,
                     )
                 except Exception as e:
                     logger.warning(f"스토리지 URL 생성 실패 (external_id={external_id}): {str(e)}")
-            
-            # metadata 추출
             metadata = r.get("metadata", {}) or {}
-            
-            # LegalGroundingChunk 객체 생성 (metadata 포함)
             results.append(
                 LegalGroundingChunk(
                     source_id=r.get("id", ""),
@@ -1114,19 +1264,55 @@ class LegalRAGService:
                     metadata=metadata,
                 )
             )
-        
-        # threshold 체크: 상위 1개 스코어가 너무 낮으면 빈 리스트 반환
-        if results and len(results) > 0:
-            top_score = results[0].score
-            if top_score < 0.4:  # threshold: 0.4
-                logger.info(f"[법령 검색] 상위 스코어가 너무 낮음 (score={top_score:.3f} < 0.4), 결과 없음으로 처리")
-                return []  # threshold 미만이면 빈 리스트 반환
-        
-        # 타입 다양성 확보: source_type별 quota 채워서 8개 선정
-        if ensure_diversity and len(results) > top_k:
-            results = self._ensure_source_type_diversity(results, top_k)
-        
-        return results[:top_k]
+        return results
+
+    def rerank_legal_chunks(
+        self,
+        candidates: List[LegalGroundingChunk],
+        top_k: int = 8,
+        min_score_threshold: float = 0.4,
+        ensure_diversity: bool = True,
+    ) -> List[LegalGroundingChunk]:
+        """
+        검색 후보에 대한 rerank 단계 (diversity, threshold, category 일관성).
+        1차 vector recall 결과를 입력받아 최종 top_k 선정.
+        """
+        if not candidates:
+            return []
+        if candidates[0].score < min_score_threshold:
+            logger.info(
+                f"[법령 검색 rerank] 상위 스코어가 임계값 미만 (score={candidates[0].score:.3f} < {min_score_threshold}), 결과 없음"
+            )
+            return []
+        if ensure_diversity and len(candidates) > top_k:
+            return self._ensure_source_type_diversity(candidates, top_k)
+        return candidates[:top_k]
+
+    async def _search_legal_chunks(
+        self,
+        query: str,
+        top_k: int = 8,
+        category: Optional[str] = None,
+        ensure_diversity: bool = True,
+    ) -> List[LegalGroundingChunk]:
+        """
+        법령 청크 검색: 1차 vector recall 후 rerank 레이어 적용.
+        """
+        query_embedding = await self._get_embedding(query)
+        filters = {"topic_main": category} if category else None
+        candidate_top_k = 20 if ensure_diversity else top_k
+        rows = self.vector_store.search_similar_legal_chunks(
+            query_embedding=query_embedding,
+            top_k=candidate_top_k,
+            filters=filters,
+        )
+        candidates = self._rows_to_grounding_chunks(rows)
+        return self.rerank_legal_chunks(
+            candidates,
+            top_k=top_k,
+            min_score_threshold=0.4,
+            ensure_diversity=ensure_diversity,
+        )
     
     def _ensure_source_type_diversity(
         self,

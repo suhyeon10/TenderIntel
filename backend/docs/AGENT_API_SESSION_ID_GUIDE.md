@@ -12,7 +12,7 @@ const selectedConversation = conversations.find(
   c => c.id === selectedConversationId
 )
 
-// 실제 DB의 sessionId (legal_chat_sessions.id)
+// 실제 DB의 sessionId (linkus_legal_chat_sessions.id)
 const sessionId = selectedConversation?.sessionId
 ```
 
@@ -23,14 +23,14 @@ const sessionId = selectedConversation?.sessionId
 **관련 변수:**
 - `selectedConversationId`: 프론트엔드에서 사용하는 로컬 ID (예: `"session-uuid"`)
 - `conversations`: 대화 세션 배열
-- `conversations[].sessionId`: 실제 DB의 `legal_chat_sessions.id` (Agent API에서 사용)
+- `conversations[].sessionId`: 실제 DB의 `linkus_legal_chat_sessions.id` (Agent API에서 사용)
 
 ### 3. SessionID 구조
 
 ```typescript
 interface ConversationSession {
   id: string              // 프론트엔드 로컬 ID: "session-{uuid}"
-  sessionId: string       // 실제 DB ID (legal_chat_sessions.id): "{uuid}"
+  sessionId: string       // 실제 DB ID (linkus_legal_chat_sessions.id): "{uuid}"
   title: string
   messages: ChatMessage[]
   createdAt: Date

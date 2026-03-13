@@ -237,7 +237,7 @@ async def analyze_contract(
         doc_id = str(uuid.uuid4())
         doc_title = title or file.filename or "계약서"
         
-        # contract_chunks 저장을 먼저 완료한 후 분석 시작 (Race condition 해결)
+        # linkus_legal_contract_chunks 저장을 먼저 완료한 후 분석 시작 (Race condition 해결)
         async def prepare_contract_chunks():
             """계약서 청킹 및 벡터 저장"""
             try:
@@ -258,7 +258,7 @@ async def analyze_contract(
                 chunk_texts = [chunk.content for chunk in contract_chunks]
                 embeddings = await asyncio.to_thread(generator.embed, chunk_texts)
                 
-                # 3. contract_chunks 테이블에 저장
+                # 3. linkus_legal_contract_chunks 테이블에 저장
                 from core.supabase_vector_store import SupabaseVectorStore
                 vector_store = SupabaseVectorStore()
                 
@@ -278,26 +278,26 @@ async def analyze_contract(
                     contract_id=doc_id,
                     chunks=chunk_payload
                 )
-                logger.info(f"[계약서 분석] contract_chunks 저장 완료: {len(chunk_payload)}개 청크")
+                logger.info(f"[계약서 분석] linkus_legal_contract_chunks 저장 완료: {len(chunk_payload)}개 청크")
                 return True
             except Exception as chunk_error:
-                logger.warning(f"[계약서 분석] contract_chunks 저장 실패 (계속 진행): {str(chunk_error)}", exc_info=True)
+                logger.warning(f"[계약서 분석] linkus_legal_contract_chunks 저장 실패 (계속 진행): {str(chunk_error)}", exc_info=True)
                 # 청크 저장 실패해도 분석은 계속 진행
                 return False
         
-        # contract_chunks 저장을 먼저 완료
+        # linkus_legal_contract_chunks 저장을 먼저 완료
         chunks_saved = await prepare_contract_chunks()
         
         # Step 1: canonical clause 리스트 생성
         clauses = extract_clauses(extracted_text)
         logger.info(f"[계약서 분석] clause 추출 완료: {len(clauses)}개")
         
-        # 저장 완료 후 분석 시작 (Dual RAG에서 contract_chunks 사용 가능)
+        # 저장 완료 후 분석 시작 (Dual RAG에서 linkus_legal_contract_chunks 사용 가능)
         async def analyze_contract_risk():
             """법률 리스크 분석 (clause_id 기반)"""
             service = get_legal_service()
-            # doc_id를 전달하여 contract_chunks도 검색
-            # chunks_saved가 True면 contract_chunks가 저장되어 있으므로 검색 가능
+            # doc_id를 전달하여 linkus_legal_contract_chunks도 검색
+            # chunks_saved가 True면 linkus_legal_contract_chunks가 저장되어 있으므로 검색 가능
             # clauses를 전달하여 clause_id 기반 분석 수행
             return await service.analyze_contract(
                 extracted_text=extracted_text,
@@ -1504,7 +1504,7 @@ async def analyze_situation(
         # snippet 분석 함수 (이미 위에서 import됨)
         
         for chunk in grounding_chunks:
-            source_id = chunk.get("source_id", "")  # legal_chunks.id (UUID)
+            source_id = chunk.get("source_id", "")  # linkus_legal_legal_chunks.id (UUID)
             source_type = chunk.get("source_type", "law")
             # externalId는 grounding_chunks에서 제공된 external_id 사용 (실제 파일 ID)
             external_id = chunk.get("external_id") or chunk.get("externalId")
@@ -1516,7 +1516,7 @@ async def analyze_situation(
                     external_id = external_id or chunk_info.get("external_id")
                     source_type = source_type or chunk_info.get("source_type", "law")
             
-            # fileUrl 무조건 새로 생성 (legal_chunks에 저장된 file_url은 신뢰할 수 없음)
+            # fileUrl 무조건 새로 생성 (linkus_legal_legal_chunks에 저장된 file_url은 신뢰할 수 없음)
             file_url = None
             if external_id and source_type:
                 try:
@@ -1542,13 +1542,13 @@ async def analyze_situation(
                 _logger.error(f"source snippet 분석 실패 (sourceId={source_id}): {str(e)}", exc_info=True)
             
             sources.append({
-                "sourceId": source_id,  # legal_chunks.id (UUID)
+                "sourceId": source_id,  # linkus_legal_legal_chunks.id (UUID)
                 "sourceType": source_type,
                 "title": chunk.get("title", ""),
                 "snippet": original_snippet,  # 원본 유지 (하위 호환성)
                 "snippetAnalyzed": analyzed_snippet,  # 분석된 결과 추가
                 "score": float(chunk.get("score", 0.0)),
-                "externalId": external_id,  # legal_chunks.external_id (실제 파일 ID, DB 조회로 보완)
+                "externalId": external_id,  # linkus_legal_legal_chunks.external_id (실제 파일 ID, DB 조회로 보완)
                 "fileUrl": file_url,  # 스토리지 Signed URL (무조건 새로 생성)
             })
         
@@ -1727,11 +1727,11 @@ async def get_situation_analysis(
         )
 
 
-# 레거시 API 제거됨 - 새 테이블 구조(legal_chat_sessions, legal_chat_messages) 사용
+# 레거시 API 제거됨 - 새 테이블 구조(linkus_legal_chat_sessions, linkus_legal_chat_messages) 사용
 
 
 # ============================================================================
-# 새로운 통합 챗 시스템 API (legal_chat_sessions, legal_chat_messages)
+# 새로운 통합 챗 시스템 API (linkus_legal_chat_sessions, linkus_legal_chat_messages)
 # ============================================================================
 
 @router.post("/chat/sessions", response_model=dict)
@@ -2008,6 +2008,7 @@ async def chat_with_contract(
                 "summary": contract.get("summary", ""),
                 "issues": contract.get("issues", []),
                 "sections": contract.get("sections", {}),
+                "metadata": contract.get("metadata", {}),
             }
             
             # 계약서 컨텍스트인 경우 docIds에 추가 (RAG 검색용)
@@ -2040,7 +2041,24 @@ async def chat_with_contract(
             context_type=context_type,
             context_data=prompt_context,
         )
-        
+        # 연구용 trace 로그 및 파일 저장 (baseline vs verifier 비교용)
+        trace = result.get("trace")
+        if trace:
+            logger.info(
+                "[legal_chat] trace: selected_issue_id=%s, selected_clause_id=%s, ocr_used=%s, source_type=%s, "
+                "retrieved_source_count=%s, verification_status=%s",
+                trace.get("selected_issue_id"),
+                trace.get("selected_clause_id"),
+                trace.get("ocr_used"),
+                trace.get("source_type"),
+                trace.get("retrieved_source_count"),
+                trace.get("verification_status"),
+            )
+            try:
+                storage_service = get_storage_service()
+                storage_service.save_agent_trace(trace, session_id=None, query=payload.query)
+            except Exception as save_err:
+                logger.warning("trace 파일 저장 실패 (무시): %s", save_err)
         # used_chunks 변환 (프론트엔드 형식)
         used_chunks_v2 = None
         if result.get("used_chunks"):

@@ -209,7 +209,7 @@ def update_file_path_in_db(supabase, external_id: str, storage_path: str) -> boo
     """
     try:
         # external_id로 모든 청크 업데이트
-        result = supabase.table("legal_chunks")\
+        result = supabase.table("linkus_legal_legal_chunks")\
             .update({"file_path": storage_path})\
             .eq("external_id", external_id)\
             .execute()
@@ -258,7 +258,7 @@ def main():
     # legal_chunks에서 title, source_type, external_id, file_path, metadata 조회
     logger.info("\n[INFO] legal_chunks 테이블에서 데이터 조회 중...")
     try:
-        result = supabase.table("legal_chunks")\
+        result = supabase.table("linkus_legal_legal_chunks")\
             .select("title, source_type, external_id, file_path, metadata")\
             .range(0, 9999)\
             .execute()

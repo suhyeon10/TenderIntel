@@ -25,11 +25,11 @@
 [3] 조항 단위 청킹 및 벡터 저장
     - processor.to_contract_chunks()
     - 임베딩 생성 (BAAI/bge-m3)
-    - contract_chunks 테이블에 저장
+    - linkus_legal_contract_chunks 테이블에 저장
     ↓
 [4] Dual RAG 검색
-    - 계약서 내부 검색 (contract_chunks)
-    - 외부 법령 검색 (legal_chunks)
+    - 계약서 내부 검색 (linkus_legal_contract_chunks)
+    - 외부 법령 검색 (linkus_legal_legal_chunks)
     ↓
 [5] LLM 위험 분석
     - build_contract_analysis_prompt()로 프롬프트 생성
@@ -44,8 +44,8 @@
     - originalText를 계약서 원문에서 찾아 하이라이트
     ↓
 [8] DB 저장
-    - contract_analyses 테이블
-    - contract_issues 테이블
+    - linkus_legal_contract_analyses 테이블
+    - linkus_legal_contract_issues 테이블
     ↓
 [9] 응답 반환
     - ContractAnalysisResponseV2 형식
@@ -128,12 +128,12 @@ ClauseLabelingTool.execute(
    # 계약서 앞부분 2000자 또는 조항 제목만 사용
    ```
 
-2. **계약서 내부 검색** (contract_chunks)
+2. **계약서 내부 검색** (linkus_legal_contract_chunks)
    - `doc_id`가 있으면 계약서 내부 청크 검색
    - 벡터 유사도 검색 (top_k=5)
    - 조항 번호 기반 boosting 지원
 
-3. **외부 법령 검색** (legal_chunks)
+3. **외부 법령 검색** (linkus_legal_legal_chunks)
    - 법령/가이드/케이스 검색 (top_k=8)
    - source_type: `law`, `manual`, `case`, `standard_contract`
 
@@ -154,7 +154,7 @@ ClauseLabelingTool.execute(
 - 3000~9000자: 앞 3000자 + 뒤 3000자
 - 9000자 이상: 앞 3000자 + 중간 3000자 + 뒤 3000자
 
-[계약서 주요 조항] (contract_chunks)
+[계약서 주요 조항] (linkus_legal_contract_chunks)
 - 제{article_number}조: {content[:400]}
 
 [참고 법령/가이드라인] (grounding_chunks)
@@ -190,7 +190,7 @@ ClauseLabelingTool.execute(
 
 ## 데이터베이스 테이블 구조
 
-### 1. contract_analyses (계약서 분석 결과)
+### 1. linkus_legal_contract_analyses (계약서 분석 결과)
 
 **주요 컬럼**:
 ```sql
@@ -239,12 +239,12 @@ created_at          TIMESTAMPTZ
 ]
 ```
 
-### 2. contract_chunks (계약서 청크)
+### 2. linkus_legal_contract_chunks (계약서 청크)
 
 **주요 컬럼**:
 ```sql
 id              UUID (PK)
-contract_id     TEXT (FK → contract_analyses.doc_id)
+contract_id     TEXT (FK → linkus_legal_contract_analyses.doc_id)
 article_number  INTEGER (조 번호)
 paragraph_index INTEGER (문단 인덱스)
 content         TEXT (청크 내용)
@@ -260,12 +260,12 @@ created_at      TIMESTAMPTZ
 - 조항 단위 벡터 검색
 - Issue 기반 boosting
 
-### 3. contract_issues (위험 이슈)
+### 3. linkus_legal_contract_issues (위험 이슈)
 
 **주요 컬럼**:
 ```sql
 id                    UUID (PK)
-contract_analysis_id UUID (FK → contract_analyses.id)
+contract_analysis_id UUID (FK → linkus_legal_contract_analyses.id)
 issue_id              TEXT (이슈 고유 ID)
 category              TEXT (이슈 카테고리)
 severity              TEXT ('low' | 'medium' | 'high')
@@ -277,7 +277,7 @@ suggested_revision    TEXT (개선안)
 created_at            TIMESTAMPTZ
 ```
 
-### 4. legal_chunks (법령 청크)
+### 4. linkus_legal_legal_chunks (법령 청크)
 
 **주요 컬럼**:
 ```sql
@@ -340,7 +340,7 @@ created_at   TIMESTAMPTZ
 **현재 상태**: 개발 모드로 비활성화됨
 
 **로직**:
-1. `file_name`으로 `contract_analyses` 조회
+1. `file_name`으로 `linkus_legal_contract_analyses` 조회
 2. `created_at DESC LIMIT 1`로 최신 결과 가져오기
 3. "분석 완료" 확인:
    - `clauses`가 비어있지 않음 (`[]` 아님)
@@ -362,7 +362,7 @@ created_at   TIMESTAMPTZ
 
 ### 3. 비동기 처리
 - 임베딩 생성: `asyncio.to_thread()`
-- contract_chunks 저장 후 분석 시작 (Race condition 방지)
+- linkus_legal_contract_chunks 저장 후 분석 시작 (Race condition 방지)
 
 ---
 

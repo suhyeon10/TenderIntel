@@ -4,11 +4,18 @@
 
 from typing import Dict, Any, Optional, List
 import os
+import json
+from datetime import datetime
+from pathlib import Path
 from supabase import create_client, Client
 from config import settings
 import logging
 
 logger = logging.getLogger(__name__)
+
+# 연구용 trace 로그 파일 (스키마 변경 없이 회수 가능)
+AGENT_TRACE_LOG_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "legal_agent_traces"
+TRACE_LOG_FILENAME = "traces.jsonl"
 
 
 class ContractStorageService:
@@ -79,7 +86,7 @@ class ContractStorageService:
             # 로깅으로 실제 저장되는 값 확인
             logger.info(f"[DB 저장] file_name 설정: original_filename={original_filename}, title={title}, 최종 file_name={file_name_value}")
             
-            # 1. contract_analyses 테이블에 헤더 저장
+            # 1. linkus_legal_contract_analyses 테이블에 헤더 저장
             analysis_data = {
                 "doc_id": doc_id,
                 "title": title,
@@ -151,12 +158,12 @@ class ContractStorageService:
                 analysis_data["metadata"] = metadata
             
             try:
-                result = self.sb.table("contract_analyses").insert(analysis_data).execute()
+                result = self.sb.table("linkus_legal_contract_analyses").insert(analysis_data).execute()
             except Exception as insert_error:
                 if metadata and "metadata" in str(insert_error).lower():
-                    logger.warning("[DB 저장] contract_analyses.metadata 컬럼이 없어 metadata 없이 재시도합니다.")
+                    logger.warning("[DB 저장] linkus_legal_contract_analyses.metadata 컬럼이 없어 metadata 없이 재시도합니다.")
                     analysis_data.pop("metadata", None)
-                    result = self.sb.table("contract_analyses").insert(analysis_data).execute()
+                    result = self.sb.table("linkus_legal_contract_analyses").insert(analysis_data).execute()
                 else:
                     raise
             
@@ -165,7 +172,7 @@ class ContractStorageService:
             
             contract_analysis_id = result.data[0]["id"]
             
-            # 2. contract_issues 테이블에 이슈들 저장 (테이블이 있는 경우에만)
+            # 2. linkus_legal_contract_issues 테이블에 이슈들 저장 (테이블이 있는 경우에만)
             logger.info(f"[DB 저장] issues 배열 길이: {len(issues) if issues else 0}")
             if issues:
                 try:
@@ -206,13 +213,13 @@ class ContractStorageService:
                         logger.debug(f"[DB 저장] issue[{idx}]: id={issue_data['issue_id']}, summary={issue_data['summary'][:50] if issue_data['summary'] else '(없음)'}")
                 
                     if issues_data:
-                        result_issues = self.sb.table("contract_issues").insert(issues_data).execute()
-                        logger.info(f"[DB 저장] contract_issues 저장 완료: {len(issues_data)}개 이슈 저장됨")
+                        result_issues = self.sb.table("linkus_legal_contract_issues").insert(issues_data).execute()
+                        logger.info(f"[DB 저장] linkus_legal_contract_issues 저장 완료: {len(issues_data)}개 이슈 저장됨")
                     else:
                         logger.warning(f"[DB 저장] issues_data가 비어있어 이슈를 저장하지 않음")
                 except Exception as issues_error:
-                    # contract_issues 테이블이 없으면 무시 (선택적 기능)
-                    logger.warning(f"contract_issues 저장 실패 (계속 진행): {str(issues_error)}", exc_info=True)
+                    # linkus_legal_contract_issues 테이블이 없으면 무시 (선택적 기능)
+                    logger.warning(f"linkus_legal_contract_issues 저장 실패 (계속 진행): {str(issues_error)}", exc_info=True)
             else:
                 logger.warning(f"[DB 저장] issues 배열이 비어있어 이슈를 저장하지 않음")
             
@@ -242,10 +249,10 @@ class ContractStorageService:
         self._ensure_initialized()
         
         try:
-            # contract_analyses 테이블에서 file_name으로 조회
+            # linkus_legal_contract_analyses 테이블에서 file_name으로 조회
             # ORDER BY created_at DESC LIMIT 1로 가장 최근 것만 가져옴
             query = (
-                self.sb.table("contract_analyses")
+                self.sb.table("linkus_legal_contract_analyses")
                 .select("*")
                 .eq("file_name", file_name)
                 .order("created_at", desc=True)
@@ -283,11 +290,11 @@ class ContractStorageService:
             contract_analysis_id = analysis["id"]
             doc_id_value = analysis.get("doc_id") or str(analysis["id"])
             
-            # contract_issues 테이블에서 이슈들 조회
+            # linkus_legal_contract_issues 테이블에서 이슈들 조회
             issues = []
             try:
                 issues_result = (
-                    self.sb.table("contract_issues")
+                    self.sb.table("linkus_legal_contract_issues")
                     .select("*")
                     .eq("contract_analysis_id", contract_analysis_id)
                     .execute()
@@ -306,7 +313,7 @@ class ContractStorageService:
                             "suggestedRevision": issue.get("suggested_revision", ""),
                         })
             except Exception as e:
-                logger.warning(f"[캐시 조회] contract_issues 조회 실패: {str(e)}")
+                logger.warning(f"[캐시 조회] linkus_legal_contract_issues 조회 실패: {str(e)}")
                 issues = []
             
             # clauses와 highlightedTexts 조회 (JSONB 컬럼)
@@ -380,10 +387,10 @@ class ContractStorageService:
         self._ensure_initialized()
         
         try:
-            # contract_analyses 테이블에서 조회
+            # linkus_legal_contract_analyses 테이블에서 조회
             # doc_id로 먼저 시도, 없으면 id로 시도 (기존 데이터 호환성)
             # user_id 필터링 제거: doc_id만으로 조회하여 모든 사용자의 계약서를 볼 수 있게 함
-            query = self.sb.table("contract_analyses").select("*").eq("doc_id", doc_id)
+            query = self.sb.table("linkus_legal_contract_analyses").select("*").eq("doc_id", doc_id)
             
             result = query.execute()
             
@@ -393,7 +400,7 @@ class ContractStorageService:
                     # UUID 형식인지 확인
                     import uuid
                     uuid.UUID(doc_id)
-                    query = self.sb.table("contract_analyses").select("*").eq("id", doc_id)
+                    query = self.sb.table("linkus_legal_contract_analyses").select("*").eq("id", doc_id)
                     result = query.execute()
                 except (ValueError, AttributeError):
                     pass
@@ -405,11 +412,11 @@ class ContractStorageService:
             analysis = result.data[0]
             contract_analysis_id = analysis["id"]
             
-            # contract_issues 테이블에서 이슈들 조회 (테이블이 있는 경우에만)
+            # linkus_legal_contract_issues 테이블에서 이슈들 조회 (테이블이 있는 경우에만)
             issues = []
             try:
                 issues_result = (
-                    self.sb.table("contract_issues")
+                    self.sb.table("linkus_legal_contract_issues")
                     .select("*")
                     .eq("contract_analysis_id", contract_analysis_id)
                     .execute()
@@ -428,7 +435,7 @@ class ContractStorageService:
                             "suggestedRevision": issue.get("suggested_revision", ""),
                         })
             except Exception:
-                # contract_issues 테이블이 없으면 빈 리스트로 설정
+                # linkus_legal_contract_issues 테이블이 없으면 빈 리스트로 설정
                 issues = []
             
             # v2 응답 형식으로 변환
@@ -526,7 +533,7 @@ class ContractStorageService:
             if user_id:
                 data["user_id"] = user_id
             
-            result = self.sb.table("situation_analyses").insert(data).execute()
+            result = self.sb.table("linkus_legal_situation_analyses").insert(data).execute()
             
             if not result.data or len(result.data) == 0:
                 raise ValueError("상황 분석 결과 저장 실패")
@@ -576,7 +583,7 @@ class ContractStorageService:
         
         try:
             result = (
-                self.sb.table("contract_analyses")
+                self.sb.table("linkus_legal_contract_analyses")
                 .select("*")
                 .eq("user_id", user_id)
                 .order("created_at", desc=True)
@@ -590,18 +597,18 @@ class ContractStorageService:
                 for analysis in result.data:
                     contract_analysis_id = analysis["id"]
                     
-                    # 이슈 개수 조회 (contract_issues 테이블이 있는 경우에만)
+                    # 이슈 개수 조회 (linkus_legal_contract_issues 테이블이 있는 경우에만)
                     issue_count = 0
                     try:
                         issues_result = (
-                            self.sb.table("contract_issues")
+                            self.sb.table("linkus_legal_contract_issues")
                             .select("id", count="exact")
                             .eq("contract_analysis_id", contract_analysis_id)
                             .execute()
                         )
                         issue_count = issues_result.count if hasattr(issues_result, 'count') else 0
                     except Exception:
-                        # contract_issues 테이블이 없으면 0으로 설정
+                        # linkus_legal_contract_issues 테이블이 없으면 0으로 설정
                         issue_count = 0
                     
                     # doc_id가 없으면 id를 사용 (기존 데이터 호환성)
@@ -624,6 +631,39 @@ class ContractStorageService:
         except Exception as e:
             logger.error(f"사용자별 계약서 분석 조회 중 오류: {str(e)}", exc_info=True)
             return []
+
+    def save_agent_trace(
+        self,
+        trace: Dict[str, Any],
+        session_id: Optional[str] = None,
+        query: Optional[str] = None,
+    ) -> None:
+        """
+        연구용 agent trace 저장 (파일 JSONL + DB linkus_legal_agent_traces). baseline vs verifier 비교용.
+        저장 항목: selected_issue_id, selected_clause_id, ocr_used, source_type,
+        issue_agent_output, retrieved_source_count, verification_status.
+        """
+        record = {
+            "ts": datetime.utcnow().isoformat() + "Z",
+            "session_id": session_id,
+            "query": query,
+            **{k: v for k, v in trace.items() if k in (
+                "selected_issue_id", "selected_clause_id", "ocr_used", "source_type",
+                "issue_agent_output", "retrieved_source_count", "verification_status",
+            )},
+        }
+        try:
+            AGENT_TRACE_LOG_DIR.mkdir(parents=True, exist_ok=True)
+            log_path = AGENT_TRACE_LOG_DIR / TRACE_LOG_FILENAME
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        except Exception as e:
+            logger.warning(f"save_agent_trace 파일 저장 실패 (무시): {e}")
+        try:
+            self._ensure_initialized()
+            self.sb.table("linkus_legal_agent_traces").insert(record).execute()
+        except Exception as db_e:
+            logger.warning(f"save_agent_trace DB(linkus_legal_agent_traces) 실패 (무시): {db_e}")
     
     async def get_user_situation_analyses(
         self,
@@ -646,7 +686,7 @@ class ContractStorageService:
         
         try:
             result = (
-                self.sb.table("situation_analyses")
+                self.sb.table("linkus_legal_situation_analyses")
                 .select("*")
                 .eq("user_id", user_id)
                 .order("created_at", desc=True)
@@ -698,7 +738,7 @@ class ContractStorageService:
         
         try:
             # user_id 필터링 제거: 모든 사용자의 분석 결과 조회 가능
-            query = self.sb.table("situation_analyses").select("*").eq("id", situation_id)
+            query = self.sb.table("linkus_legal_situation_analyses").select("*").eq("id", situation_id)
             
             result = query.execute()
             
@@ -831,10 +871,10 @@ class ContractStorageService:
             logger.error(f"상황 분석 조회 중 오류: {str(e)}", exc_info=True)
             raise
     
-    # 레거시 함수 제거됨 - 새 테이블 구조(legal_chat_sessions, legal_chat_messages) 사용
+    # 레거시 함수 제거됨 - 새 테이블 구조(linkus_legal_chat_sessions, linkus_legal_chat_messages) 사용
     
     # ============================================================================
-    # 새로운 통합 챗 시스템 (legal_chat_sessions, legal_chat_messages)
+    # 새로운 통합 챗 시스템 (linkus_legal_chat_sessions, linkus_legal_chat_messages)
     # ============================================================================
     
     async def create_chat_session(
@@ -850,7 +890,7 @@ class ContractStorageService:
         Args:
             user_id: 사용자 ID
             initial_context_type: 초기 컨텍스트 타입 ('none' | 'situation' | 'contract')
-            initial_context_id: 초기 컨텍스트 ID (situation_analyses.id 또는 contract_analyses.id)
+            initial_context_id: 초기 컨텍스트 ID (linkus_legal_situation_analyses.id 또는 linkus_legal_contract_analyses.id)
             title: 세션 제목 (옵션)
         
         Returns:
@@ -870,7 +910,7 @@ class ContractStorageService:
             if title:
                 data["title"] = title
             
-            result = self.sb.table("legal_chat_sessions").insert(data).execute()
+            result = self.sb.table("linkus_legal_chat_sessions").insert(data).execute()
             
             if not result.data or len(result.data) == 0:
                 raise ValueError("챗 세션 생성 실패")
@@ -928,7 +968,7 @@ class ContractStorageService:
             if metadata:
                 data["metadata"] = metadata
             
-            result = self.sb.table("legal_chat_messages").insert(data).execute()
+            result = self.sb.table("linkus_legal_chat_messages").insert(data).execute()
             
             if not result.data or len(result.data) == 0:
                 raise ValueError("챗 메시지 저장 실패")
@@ -962,7 +1002,7 @@ class ContractStorageService:
         
         try:
             result = (
-                self.sb.table("legal_chat_sessions")
+                self.sb.table("linkus_legal_chat_sessions")
                 .select("*")
                 .eq("user_id", user_id)
                 .order("updated_at", desc=True)
@@ -995,7 +1035,7 @@ class ContractStorageService:
         
         try:
             query = (
-                self.sb.table("legal_chat_messages")
+                self.sb.table("linkus_legal_chat_messages")
                 .select("*")
                 .eq("session_id", session_id)
                 .order("sequence_number", desc=False)
@@ -1030,7 +1070,7 @@ class ContractStorageService:
         
         try:
             query = (
-                self.sb.table("legal_chat_sessions")
+                self.sb.table("linkus_legal_chat_sessions")
                 .select("*")
                 .eq("id", session_id)
             )
@@ -1076,7 +1116,7 @@ class ContractStorageService:
                 return True
             
             result = (
-                self.sb.table("legal_chat_sessions")
+                self.sb.table("linkus_legal_chat_sessions")
                 .update(data)
                 .eq("id", session_id)
                 .eq("user_id", user_id)
@@ -1106,7 +1146,7 @@ class ContractStorageService:
         self._ensure_initialized()
         
         try:
-            self.sb.table("legal_chat_sessions").delete().eq("id", session_id).eq("user_id", user_id).execute()
+            self.sb.table("linkus_legal_chat_sessions").delete().eq("id", session_id).eq("user_id", user_id).execute()
             logger.info(f"챗 세션 삭제 완료: session_id={session_id}")
             return True
         except Exception as e:
@@ -1126,7 +1166,7 @@ class ContractStorageService:
         Args:
             user_id: 사용자 ID
             initial_context_type: 초기 컨텍스트 타입 ('none', 'situation', 'contract')
-            initial_context_id: 초기 컨텍스트 ID (situation_analyses.id 또는 contract_analyses.id)
+            initial_context_id: 초기 컨텍스트 ID (linkus_legal_situation_analyses.id 또는 linkus_legal_contract_analyses.id)
             title: 세션 제목 (옵션)
         
         Returns:
@@ -1146,7 +1186,7 @@ class ContractStorageService:
             if title:
                 data["title"] = title
             
-            result = self.sb.table("legal_chat_sessions").insert(data).execute()
+            result = self.sb.table("linkus_legal_chat_sessions").insert(data).execute()
             
             if not result.data or len(result.data) == 0:
                 raise ValueError("채팅 세션 생성 실패")
@@ -1204,7 +1244,7 @@ class ContractStorageService:
             if metadata:
                 data["metadata"] = metadata
             
-            result = self.sb.table("legal_chat_messages").insert(data).execute()
+            result = self.sb.table("linkus_legal_chat_messages").insert(data).execute()
             
             if not result.data or len(result.data) == 0:
                 raise ValueError("채팅 메시지 저장 실패")
@@ -1236,7 +1276,7 @@ class ContractStorageService:
         
         try:
             query = (
-                self.sb.table("legal_chat_messages")
+                self.sb.table("linkus_legal_chat_messages")
                 .select("*")
                 .eq("session_id", session_id)
                 .order("sequence_number", desc=False)
@@ -1289,7 +1329,7 @@ class ContractStorageService:
         
         try:
             result = (
-                self.sb.table("legal_chat_sessions")
+                self.sb.table("linkus_legal_chat_sessions")
                 .select("*")
                 .eq("user_id", user_id)
                 .order("created_at", desc=True)

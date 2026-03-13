@@ -14,7 +14,6 @@ import asyncio
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 import uuid
-import hashlib
 
 # 프로젝트 루트를 Python 경로에 추가
 backend_dir = Path(__file__).parent.parent
@@ -24,10 +23,20 @@ from core.document_processor_v2 import DocumentProcessor
 from core.generator_v2 import LLMGenerator
 from core.supabase_vector_store import SupabaseVectorStore
 from core.logging_config import get_logger
+from core.legal_indexing_utils import (
+    make_external_id,
+    get_source_type_from_path as get_source_type_from_path_util,
+    build_standard_metadata,
+    extraction_source_to_modality,
+    append_ingestion_manifest_entry,
+)
 from supabase import create_client, Client
 from config import settings
 
 logger = get_logger(__name__)
+
+# 법률 데이터 루트 (external_id 정규화 기준)
+LEGAL_BASE_PATH = backend_dir / "data" / "legal"
 
 # Supabase Storage 설정
 STORAGE_BUCKET = "legal-files"
@@ -46,12 +55,6 @@ def get_supabase_client() -> Client:
         
         _supabase_client = create_client(supabase_url, supabase_key)
     return _supabase_client
-
-
-def make_external_id(file_path: Path) -> str:
-    """파일 경로 기반 external_id 생성 (해시)"""
-    relative_path = str(file_path.relative_to(backend_dir))
-    return hashlib.md5(relative_path.encode("utf-8")).hexdigest()
 
 
 def source_type_to_folder(source_type: str) -> str:
@@ -110,18 +113,8 @@ def upload_legal_file(file_path: Path, source_type: str, external_id: str) -> Tu
 
 
 def get_source_type_from_path(file_path: Path) -> str:
-    """파일 경로에서 source_type 추출"""
-    path_str = str(file_path)
-    if "standard_contracts" in path_str:
-        return "standard_contract"
-    elif "laws" in path_str:
-        return "law"
-    elif "manuals" in path_str:
-        return "manual"
-    elif "cases" in path_str:
-        return "case"
-    else:
-        return "unknown"
+    """파일 경로에서 source_type 추출 (공용 규칙)"""
+    return get_source_type_from_path_util(file_path)
 
 
 
@@ -147,9 +140,9 @@ async def process_legal_file(
     """
     file_name = file_path.name
     source_type = get_source_type_from_path(file_path)
-    
-    # external_id 생성 (파일 경로 기반 해시)
-    external_id = make_external_id(file_path)
+
+    # external_id 생성 (공용 규칙: LEGAL_BASE_PATH 기준 정규화 해시)
+    external_id = make_external_id(file_path, LEGAL_BASE_PATH)
     
     try:
         # 0. 중복 체크: 이미 존재하는 파일인지 확인
@@ -160,7 +153,7 @@ async def process_legal_file(
             logger.info(f"  ⏭️  이미 존재하는 파일입니다. 스킵합니다.")
             # 기존 청크 개수 확인
             try:
-                result = vector_store.sb.table("legal_chunks")\
+                result = vector_store.sb.table("linkus_legal_legal_chunks")\
                     .select("id", count="exact")\
                     .eq("external_id", external_id)\
                     .execute()
@@ -206,7 +199,8 @@ async def process_legal_file(
         # 1. 텍스트 추출
         logger.info(f"  🔍 텍스트 추출 중...")
         extracted_text, _ = processor.process_file(str(file_path), file_type=None)
-        
+        extraction_meta = processor.get_last_extraction_metadata()
+
         if not extracted_text or extracted_text.strip() == "":
             return {
                 "file": file_name,
@@ -287,26 +281,38 @@ async def process_legal_file(
         logger.info(f"  ✓ 임베딩 생성 완료: {len(embeddings)}개")
         logger.info(f"     ⏱️  소요 시간: {elapsed_time:.1f}초 (평균: {elapsed_time/len(chunks):.3f}초/청크)")
         
-        # 4. legal_chunks 테이블에 저장
+        # 4. legal_chunks 테이블에 저장 (표준 메타데이터 스키마 적용)
         logger.info(f"  💾 DB 저장 중...")
-        # bulk_upsert_legal_chunks는 metadata 안에 정보를 넣어야 함
+        ocr_used = extraction_meta.get("ocr_used", False)
+        extraction_source = extraction_meta.get("source_type")  # pdf_ocr, pdf_text 등
         chunk_payload = []
         for idx, chunk in enumerate(chunks):
-            # metadata에 모든 정보 포함 (bulk_upsert_legal_chunks가 metadata에서 추출)
+            base_meta = build_standard_metadata(
+                source_type=source_type,
+                external_id=external_id,
+                title=file_name,
+                file_path=storage_path,
+                chunk_index=chunk.index,
+                topic_main=chunk.metadata.get("topic_main"),
+                doc_type=chunk.metadata.get("doc_type"),
+                doc_effective_date=chunk.metadata.get("doc_effective_date"),
+                doc_version=chunk.metadata.get("doc_version"),
+                ocr_used=ocr_used,
+                extraction_source=extraction_source,
+                page=chunk.metadata.get("page"),
+            )
             chunk_metadata = {
+                **base_meta,
                 **chunk.metadata,
-                # 이 5개는 컬럼으로 빠져감
                 "external_id": external_id,
                 "source_type": source_type,
-                "title": file_name,  # 한글 파일명 (UI 표시용)
-                "file_path": storage_path,  # Storage 경로 (예: "laws/abcd1234.pdf")
+                "title": file_name,
+                "file_path": storage_path or "",
                 "chunk_index": chunk.index,
-                # 이 아래는 metadata JSONB에 들어감
                 "storage_bucket": storage_bucket,
-                "original_file_name": file_name,  # 원본 한글 파일명
-                "filename": file_name,  # 하위 호환성
+                "original_file_name": file_name,
+                "filename": file_name,
             }
-            
             chunk_payload.append({
                 "content": chunk.content,
                 "embedding": embeddings[idx],
@@ -336,9 +342,23 @@ async def process_legal_file(
         }
 
 
+def _get_embedding_model_name() -> str:
+    """현재 사용 중인 임베딩 모델명 (manifest 기록용)."""
+    try:
+        from config import settings
+        return getattr(settings, "embedding_model", None) or "bge-m3"
+    except Exception:
+        return "bge-m3"
+
+
 async def main():
     """메인 함수: data/legal/ 폴더의 모든 파일 처리"""
-    
+    from datetime import datetime
+    # ingestion manifest 경로 (실행일 기준 JSONL)
+    manifest_dir = backend_dir / "data" / "indexed" / "manifest"
+    manifest_path = manifest_dir / f"legal_ingestion_{datetime.utcnow().strftime('%Y%m%d')}.jsonl"
+    embedding_model = _get_embedding_model_name()
+
     # 명령줄 인자 파싱
     import argparse
     parser = argparse.ArgumentParser(description="법령 파일 인덱싱 스크립트")
@@ -488,9 +508,29 @@ async def main():
         results.append({
             **result,
             "type": get_source_type_from_path(file_path),
-            "target_table": "legal_chunks"
+            "target_table": "linkus_legal_legal_chunks"
         })
-        
+
+        try:
+            try:
+                file_path_audit = str(file_path.relative_to(backend_dir))
+            except ValueError:
+                file_path_audit = str(file_path)
+            append_ingestion_manifest_entry(
+                manifest_path,
+                external_id=result.get("external_id") or "",
+                file_path=file_path_audit,
+                file_hash=None,
+                source_type=get_source_type_from_path(file_path),
+                chunk_count=result.get("chunks_count", 0),
+                embedding_model=embedding_model,
+                status=result.get("status", "unknown"),
+                error_message=result.get("error"),
+                ingested_at=None,
+            )
+        except Exception as manifest_err:
+            logger.warning(f"  [manifest 기록 실패] {manifest_err}")
+
         if result["status"] == "success":
             logger.info(f"  ✅ 성공: {result['chunks_count']}개 청크 저장 완료")
         elif result["status"] == "skipped":

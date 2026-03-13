@@ -36,6 +36,8 @@ export default function ContractDetailPage() {
   const [negotiationQuestions, setNegotiationQuestions] = useState<string[]>([])
   const [retrievedContexts, setRetrievedContexts] = useState<any[]>([])
   const [fileUrl, setFileUrl] = useState<string | null>(null)  // 원본 파일 URL
+  /** 추출 메타 (ocr_used, source_type, page_count) - 개발자 확인용 */
+  const [extractionMetadata, setExtractionMetadata] = useState<{ ocr_used?: boolean; source_type?: string; page_count?: number | null } | null>(null)
   
   // 스와이프 제스처 상태
   const [touchStart, setTouchStart] = useState<{ x: number; y: number } | null>(null)
@@ -122,6 +124,7 @@ export default function ContractDetailPage() {
           toxicClauses: localData?.toxicClauses,
           negotiationQuestions: localData?.negotiationQuestions,
           retrievedContexts: localData?.retrievedContexts || localData?.retrieved_contexts || [],
+          metadata: localData?.metadata ?? undefined,
         } : (v2Data ? {
           // uuid + v2Data 있음: v2 API 응답 우선 사용
           risk_score: v2Data.riskScore,
@@ -142,6 +145,7 @@ export default function ContractDetailPage() {
           toxicClauses: v2Data.toxicClauses,
           negotiationQuestions: v2Data.negotiationQuestions,
           retrievedContexts: v2Data.retrievedContexts || [],
+          metadata: v2Data.metadata ?? undefined,
         } : {
           // uuid + v2Data 없음: 로컬 스토리지 fallback
           ...localData,
@@ -155,6 +159,7 @@ export default function ContractDetailPage() {
           riskSummaryTable: localData?.riskSummaryTable,
           toxicClauses: localData?.toxicClauses,
           negotiationQuestions: localData?.negotiationQuestions,
+          metadata: localData?.metadata ?? undefined,
         })
         
         if (normalizedData) {
@@ -375,6 +380,7 @@ export default function ContractDetailPage() {
           setToxicClauses(normalizedData.toxicClauses || v2Data?.toxicClauses || [])
           setNegotiationQuestions(normalizedData.negotiationQuestions || v2Data?.negotiationQuestions || [])
           setRetrievedContexts(normalizedData.retrievedContexts || normalizedData.retrieved_contexts || v2Data?.retrievedContexts || [])
+          setExtractionMetadata(normalizedData.metadata ?? null)
 
           setAnalysisResult(result)
         } else {
@@ -643,6 +649,15 @@ export default function ContractDetailPage() {
                     다운로드
                   </a>
                 </div>
+              </div>
+            )}
+            {/* 개발자 확인용: 추출 메타 (ocr_used, source_type, page_count) */}
+            {extractionMetadata && (
+              <div className="px-4 py-2 border-b border-slate-200 bg-slate-50/80 flex items-center gap-4 text-xs text-slate-600">
+                <span className="font-medium text-slate-500">추출 메타:</span>
+                <span>OCR={String(extractionMetadata.ocr_used ?? '—')}</span>
+                <span>source_type={extractionMetadata.source_type ?? '—'}</span>
+                <span>page_count={extractionMetadata.page_count ?? '—'}</span>
               </div>
             )}
             <div 

@@ -89,6 +89,118 @@ def build_agent_plain_prompt(
 
 
 # ============================================================================
+# Issue Agent (선택 이슈 기반 질문 구조화)
+# ============================================================================
+
+ISSUE_AGENT_SYSTEM = """당신은 계약서 Q&A에서 사용자 질문이 "어떤 이슈/조항"에 대한 것인지 구조화하는 에이전트입니다.
+입력: 사용자 질문, (선택) 선택된 이슈, 선택된 조항, 계약서 분석 요약.
+출력: 반드시 아래 JSON만 한 줄로 출력하세요. 다른 설명은 하지 마세요.
+
+{
+  "target_issue": "이슈 요약 또는 ID (선택 이슈가 있으면 그 요약, 없으면 질문에서 추론)",
+  "target_clause": "조항 번호 또는 조항 요약 (예: 제3조, 수습기간)",
+  "user_intent": "질문 의도 한 줄 (예: 위험성 설명 요청, 개정안 요청)",
+  "needed_sources": ["contract_clause", "law"] 또는 ["law", "standard_contract"] 등 검색에 필요한 소스 타입
+}
+"""
+
+
+def build_issue_agent_prompt(
+    query: str,
+    selected_issue: Optional[Dict[str, Any]] = None,
+    selected_clause_id: Optional[str] = None,
+    analysis_summary: Optional[str] = None,
+) -> str:
+    """
+    Issue Agent용 프롬프트: 사용자 질문을 target_issue, target_clause, user_intent, needed_sources로 구조화.
+    """
+    parts = [f"## 사용자 질문\n{query}\n"]
+    if analysis_summary:
+        parts.append(f"## 계약서 분석 요약 (일부)\n{analysis_summary[:400]}\n")
+    if selected_issue:
+        parts.append(
+            "## 선택된 이슈\n"
+            f"- ID/요약: {selected_issue.get('id') or selected_issue.get('summary', '')}\n"
+            f"- 카테고리: {selected_issue.get('category', '')}\n"
+            f"- 조항 원문 일부: {(selected_issue.get('originalText') or '')[:200]}\n"
+        )
+    if selected_clause_id:
+        parts.append(f"## 선택된 조항 ID\n{selected_clause_id}\n")
+    parts.append("\n위 정보를 바탕으로 JSON 한 줄만 출력하세요.")
+    return "\n".join(parts)
+
+
+# ============================================================================
+# Lightweight Verifier (hallucination 감소, 보수적 응답)
+# ============================================================================
+
+VERIFIER_SYSTEM = """당신은 법률 답변 검증기입니다. 주어진 질문과 답변 초안을 검토하여 다음을 판단하세요.
+1) 질문과 답변의 주제 일치 여부
+2) 답변의 핵심 주장에 대한 근거(제시된 참고 자료) 존재 여부
+3) 과도한 일반화(근거 없이 단정) 여부
+
+반드시 아래 JSON 한 줄만 출력하세요. 다른 설명 금지.
+{"status": "supported" | "weak_support" | "unsupported", "reason": "한 줄 이유"}
+- supported: 주제 일치, 근거 충분, 일반화 적절
+- weak_support: 주제는 맞으나 일부 주장에 근거 부족 또는 과도한 일반화
+- unsupported: 주제 불일치 또는 핵심 주장에 근거 없음
+"""
+
+
+def build_verifier_prompt(query: str, draft_answer: str, sources_summary: str = "") -> str:
+    """Verifier용 프롬프트: 질문, 초안, 참고 자료 요약."""
+    return f"""## 질문
+{query[:500]}
+
+## 답변 초안
+{draft_answer[:2000]}
+
+## 참고로 사용된 자료 (요약)
+{sources_summary[:500] if sources_summary else "없음"}
+
+위를 검토하여 JSON 한 줄만 출력하세요."""
+
+
+def parse_verifier_output(text: str) -> Optional[Dict[str, Any]]:
+    """Verifier LLM 출력에서 JSON 추출."""
+    import re
+    import json
+    text = (text or "").strip()
+    if "```" in text:
+        match = re.search(r"```(?:json)?\s*(\{[\s\S]*?\})\s*```", text)
+        if match:
+            text = match.group(1)
+    else:
+        match = re.search(r"\{[\s\S]*\}", text)
+        if match:
+            text = match.group(0)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return None
+
+
+def parse_issue_agent_output(text: str) -> Optional[Dict[str, Any]]:
+    """Issue Agent LLM 출력에서 JSON 추출."""
+    import re
+    import json
+    text = (text or "").strip()
+    # 코드 블록 제거
+    if "```" in text:
+        match = re.search(r"```(?:json)?\s*(\{[\s\S]*?\})\s*```", text)
+        if match:
+            text = match.group(1)
+    else:
+        match = re.search(r"\{[\s\S]*\}", text)
+        if match:
+            text = match.group(0)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return None
+
+
+# ============================================================================
 # Contract 모드 프롬프트 (계약서 분석 결과 기반 챗)
 # ============================================================================
 

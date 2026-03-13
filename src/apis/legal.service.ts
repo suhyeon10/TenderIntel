@@ -429,6 +429,13 @@ export interface RiskSummaryItem {
 // v2 API용 별칭 (호환성)
 export type RiskSummaryItemV2 = RiskSummaryItem;
 
+/** 계약서 추출 메타데이터 (OCR/소스 타입/페이지 수) - 분석·조회 응답에 포함 */
+export interface ContractAnalysisMetadata {
+  ocr_used?: boolean;
+  source_type?: string;  // 'pdf_text' | 'pdf_ocr' | 'image_ocr' | 'hwp_text' | 'html_text' 등
+  page_count?: number | null;
+}
+
 export interface ContractAnalysisResponseV2 {
   docId: string;
   title: string;
@@ -452,6 +459,8 @@ export interface ContractAnalysisResponseV2 {
   highlightedTexts?: HighlightedTextV2[];  // 하이라이트된 텍스트
   createdAt: string;
   fileUrl?: string;  // Supabase Storage에 저장된 원본 파일 URL
+  /** 추출 메타: ocr_used, source_type, page_count (디지털/스캔 PDF, 이미지 구분용) */
+  metadata?: ContractAnalysisMetadata;
   // 새로운 독소조항 탐지 필드
   oneLineSummary?: string;  // 한 줄 총평
   riskTrafficLight?: string;  // 리스크 신호등: 🟢 | 🟡 | 🔴
@@ -676,6 +685,7 @@ export const analyzeContractV2 = async (
       issuesCount: data.issues?.length || 0,
       hasSummary: !!data.summary,
       summaryPreview: data.summary?.substring(0, 100) || '(없음)',
+      metadata: data.metadata ? { ocr_used: data.metadata.ocr_used, source_type: data.metadata.source_type, page_count: data.metadata.page_count } : undefined,
       responseKeys: Object.keys(data)
     });
     
