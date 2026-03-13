@@ -28,6 +28,7 @@ from core.legal_indexing_utils import (
     get_source_type_from_path as get_source_type_from_path_util,
     build_standard_metadata,
     extraction_source_to_modality,
+    append_ingestion_manifest_entry,
 )
 from supabase import create_client, Client
 from config import settings
@@ -341,9 +342,23 @@ async def process_legal_file(
         }
 
 
+def _get_embedding_model_name() -> str:
+    """현재 사용 중인 임베딩 모델명 (manifest 기록용)."""
+    try:
+        from config import settings
+        return getattr(settings, "embedding_model", None) or "bge-m3"
+    except Exception:
+        return "bge-m3"
+
+
 async def main():
     """메인 함수: data/legal/ 폴더의 모든 파일 처리"""
-    
+    from datetime import datetime
+    # ingestion manifest 경로 (실행일 기준 JSONL)
+    manifest_dir = backend_dir / "data" / "indexed" / "manifest"
+    manifest_path = manifest_dir / f"legal_ingestion_{datetime.utcnow().strftime('%Y%m%d')}.jsonl"
+    embedding_model = _get_embedding_model_name()
+
     # 명령줄 인자 파싱
     import argparse
     parser = argparse.ArgumentParser(description="법령 파일 인덱싱 스크립트")
@@ -495,7 +510,27 @@ async def main():
             "type": get_source_type_from_path(file_path),
             "target_table": "linkus_legal_legal_chunks"
         })
-        
+
+        try:
+            try:
+                file_path_audit = str(file_path.relative_to(backend_dir))
+            except ValueError:
+                file_path_audit = str(file_path)
+            append_ingestion_manifest_entry(
+                manifest_path,
+                external_id=result.get("external_id") or "",
+                file_path=file_path_audit,
+                file_hash=None,
+                source_type=get_source_type_from_path(file_path),
+                chunk_count=result.get("chunks_count", 0),
+                embedding_model=embedding_model,
+                status=result.get("status", "unknown"),
+                error_message=result.get("error"),
+                ingested_at=None,
+            )
+        except Exception as manifest_err:
+            logger.warning(f"  [manifest 기록 실패] {manifest_err}")
+
         if result["status"] == "success":
             logger.info(f"  ✅ 성공: {result['chunks_count']}개 청크 저장 완료")
         elif result["status"] == "skipped":

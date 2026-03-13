@@ -4,8 +4,14 @@
 - external_id 생성 규칙 통일
 - legal_chunks 메타데이터 표준 스키마
 - source_type 결정
+- ingestion manifest (audit) 기록
 
-사용: index_legal_corpus.py 및 기존 인덱싱 스크립트에서 import
+표준 metadata 필드 (legal_chunks.metadata 또는 JSONB):
+  schema_version, source_type, external_id, title, file_path,
+  topic_main, doc_type, doc_effective_date, doc_version,
+  ocr_used, source_modality, page
+
+사용: scripts.index_contracts_from_data (단일 진입점)에서 import
 """
 
 from pathlib import Path
@@ -148,3 +154,37 @@ def build_standard_metadata(
     }
     # None 값은 제거하지 않음 (스키마 문서화/필터링에 유리). 필요 시 호출측에서 제거.
     return meta
+
+
+def append_ingestion_manifest_entry(
+    manifest_path: Path,
+    *,
+    external_id: str,
+    file_path: str,
+    file_hash: Optional[str] = None,
+    source_type: str,
+    chunk_count: int,
+    embedding_model: str = "bge-m3",
+    status: str,
+    error_message: Optional[str] = None,
+    ingested_at: Optional[str] = None,
+) -> None:
+    """
+    인덱싱 결과를 manifest 파일(JSONL)에 한 줄 추가 (audit 로그).
+    """
+    import json
+    from datetime import datetime
+    entry = {
+        "external_id": external_id,
+        "file_path": file_path,
+        "file_hash": file_hash,
+        "source_type": source_type,
+        "chunk_count": chunk_count,
+        "embedding_model": embedding_model,
+        "status": status,
+        "error_message": error_message,
+        "ingested_at": ingested_at or datetime.utcnow().isoformat() + "Z",
+    }
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(manifest_path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
