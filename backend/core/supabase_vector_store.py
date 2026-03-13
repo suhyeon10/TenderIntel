@@ -489,7 +489,7 @@ class SupabaseVectorStore:
         
         # 기존 청크 조회 (external_id + chunk_index로)
         try:
-            existing = self.sb.table("legal_chunks")\
+            existing = self.sb.table("linkus_legal_legal_chunks")\
                 .select("id")\
                 .eq("external_id", external_id)\
                 .eq("chunk_index", chunk_index)\
@@ -500,7 +500,7 @@ class SupabaseVectorStore:
             if "Could not find the table" in error_msg or "PGRST205" in error_msg:
                 print(f"[경고] 스키마 캐시 문제 감지, 클라이언트 재초기화 중...")
                 self._reinitialize_client()
-                existing = self.sb.table("legal_chunks")\
+                existing = self.sb.table("linkus_legal_legal_chunks")\
                     .select("id")\
                     .eq("external_id", external_id)\
                     .eq("chunk_index", chunk_index)\
@@ -524,7 +524,7 @@ class SupabaseVectorStore:
         if existing.data and len(existing.data) > 0:
             chunk_id = existing.data[0]["id"]
             try:
-                self.sb.table("legal_chunks")\
+                self.sb.table("linkus_legal_legal_chunks")\
                     .update(insert_data)\
                     .eq("id", chunk_id)\
                     .execute()
@@ -532,7 +532,7 @@ class SupabaseVectorStore:
                 error_msg = str(e)
                 if "Could not find the table" in error_msg or "PGRST205" in error_msg:
                     self._reinitialize_client()
-                    self.sb.table("legal_chunks")\
+                    self.sb.table("linkus_legal_legal_chunks")\
                         .update(insert_data)\
                         .eq("id", chunk_id)\
                         .execute()
@@ -542,14 +542,14 @@ class SupabaseVectorStore:
         else:
             # 새 청크 삽입
             try:
-                result = self.sb.table("legal_chunks")\
+                result = self.sb.table("linkus_legal_legal_chunks")\
                     .insert(insert_data)\
                     .execute()
             except Exception as e:
                 error_msg = str(e)
                 if "Could not find the table" in error_msg or "PGRST205" in error_msg:
                     self._reinitialize_client()
-                    result = self.sb.table("legal_chunks")\
+                    result = self.sb.table("linkus_legal_legal_chunks")\
                         .insert(insert_data)\
                         .execute()
                 else:
@@ -572,7 +572,7 @@ class SupabaseVectorStore:
         """
         self._ensure_initialized()
         try:
-            result = self.sb.table("legal_chunks")\
+            result = self.sb.table("linkus_legal_legal_chunks")\
                 .select("id", count="exact")\
                 .eq("external_id", external_id)\
                 .limit(1)\
@@ -586,10 +586,10 @@ class SupabaseVectorStore:
     
     def get_legal_chunk_by_id(self, chunk_id: str) -> Optional[Dict[str, Any]]:
         """
-        legal_chunks 테이블에서 id로 청크 정보 조회
+        linkus_legal_legal_chunks 테이블에서 id로 청크 정보 조회
         
         Args:
-            chunk_id: legal_chunks.id (UUID)
+            chunk_id: linkus_legal_legal_chunks.id (UUID)
             
         Returns:
             {
@@ -605,7 +605,7 @@ class SupabaseVectorStore:
             return None
         
         try:
-            result = self.sb.table("legal_chunks")\
+            result = self.sb.table("linkus_legal_legal_chunks")\
                 .select("id, external_id, source_type, title, file_path")\
                 .eq("id", chunk_id)\
                 .limit(1)\
@@ -621,7 +621,7 @@ class SupabaseVectorStore:
     
     def get_legal_chunk_by_title(self, title: str) -> Optional[Dict[str, Any]]:
         """
-        legal_chunks 테이블에서 title로 문서 정보 조회 (첫 번째 매칭되는 문서)
+        linkus_legal_legal_chunks 테이블에서 title로 문서 정보 조회 (첫 번째 매칭되는 문서)
         
         Args:
             title: 문서 제목 (부분 매칭 가능)
@@ -640,7 +640,7 @@ class SupabaseVectorStore:
         
         try:
             # 정확한 제목 매칭 시도
-            result = self.sb.table("legal_chunks")\
+            result = self.sb.table("linkus_legal_legal_chunks")\
                 .select("external_id, source_type, title")\
                 .eq("title", title)\
                 .limit(1)\
@@ -650,7 +650,7 @@ class SupabaseVectorStore:
                 return result.data[0]
             
             # 부분 매칭 시도 (ILIKE 사용)
-            result = self.sb.table("legal_chunks")\
+            result = self.sb.table("linkus_legal_legal_chunks")\
                 .select("external_id, source_type, title")\
                 .ilike("title", f"%{title}%")\
                 .limit(1)\
@@ -671,8 +671,10 @@ class SupabaseVectorStore:
         chunks: List[Dict[str, Any]]
     ):
         """
-        법률 청크 및 임베딩 일괄 저장 (새 스키마)
-        
+        법률 청크 및 임베딩 일괄 저장 (external_id, chunk_index 기준 실제 upsert).
+        DB에 uq_linkus_legal_legal_chunks_external_id_chunk_index 유니크 제약이 있어야 함.
+        중간 실패 시 기존 청크는 유지됨 (delete 후 insert 방식 제거).
+
         Args:
             chunks: [{
                 content: str,
@@ -690,7 +692,7 @@ class SupabaseVectorStore:
         self._ensure_initialized()
         if not chunks:
             return
-        
+
         payload = []
         for c in chunks:
             metadata = c.get("metadata", {})
@@ -699,11 +701,10 @@ class SupabaseVectorStore:
             title = metadata.get("title", "")
             chunk_index = metadata.get("chunk_index", 0)
             file_path = metadata.get("file_path", "")
-            
-            # 나머지는 metadata JSONB에 저장
-            metadata_json = {k: v for k, v in metadata.items() 
+
+            metadata_json = {k: v for k, v in metadata.items()
                             if k not in ["source_type", "external_id", "title", "chunk_index", "file_path"]}
-            
+
             payload.append({
                 "external_id": external_id,
                 "source_type": source_type,
@@ -714,40 +715,25 @@ class SupabaseVectorStore:
                 "metadata": metadata_json,
                 "embedding": c["embedding"],
             })
-        
+
         try:
-            # 기존 청크 삭제 후 삽입 (external_id 기준)
-            if payload:
-                external_ids = list(set([p["external_id"] for p in payload]))
-                for ext_id in external_ids:
-                    try:
-                        self.sb.table("legal_chunks")\
-                            .delete()\
-                            .eq("external_id", ext_id)\
-                            .execute()
-                    except Exception as e:
-                        error_msg = str(e)
-                        if "Could not find the table" in error_msg or "PGRST205" in error_msg:
-                            self._reinitialize_client()
-                            self.sb.table("legal_chunks")\
-                                .delete()\
-                                .eq("external_id", ext_id)\
-                                .execute()
-                        else:
-                            print(f"[경고] 기존 청크 삭제 실패: {str(e)}")
-            
-            # 새 청크 삽입
-            self.sb.table("legal_chunks")\
-                .insert(payload)\
-                .execute()
+            self.sb.table("linkus_legal_legal_chunks").upsert(
+                payload,
+                on_conflict="external_id,chunk_index",
+            ).execute()
         except Exception as e:
             error_msg = str(e)
             if "Could not find the table" in error_msg or "PGRST205" in error_msg:
-                print(f"[경고] 스키마 캐시 문제 감지, 클라이언트 재초기화 중...")
                 self._reinitialize_client()
-                self.sb.table("legal_chunks")\
-                    .insert(payload)\
-                    .execute()
+                self.sb.table("linkus_legal_legal_chunks").upsert(
+                    payload,
+                    on_conflict="external_id,chunk_index",
+                ).execute()
+            elif "unique constraint" in error_msg.lower() or "on_conflict" in error_msg.lower():
+                raise ValueError(
+                    "legal_chunks upsert 실패: (external_id, chunk_index) 유니크 제약이 필요합니다. "
+                    "backend/scripts/add_legal_chunks_upsert_unique.sql 를 실행하세요."
+                ) from e
             else:
                 raise
     
@@ -795,7 +781,7 @@ class SupabaseVectorStore:
             
             # RPC 함수 호출 - DB에서 벡터 연산 + 정렬 + top_k 처리
             response = self.sb.rpc(
-                "match_legal_chunks",
+                "linkus_legal_match_legal_chunks",
                 {
                     "query_embedding": query_embedding,  # vector(1024)와 매핑
                     "match_threshold": match_threshold,
@@ -811,9 +797,9 @@ class SupabaseVectorStore:
         except Exception as e:
             # RPC 함수가 없거나 오류 발생 시 fallback
             error_msg = str(e)
-            if "match_legal_chunks" in error_msg or "does not exist" in error_msg.lower():
-                print(f"[경고] match_legal_chunks RPC 함수가 없습니다. SQL 스크립트를 실행하세요: {error_msg}")
-                print("[팁] backend/scripts/create_match_legal_chunks_rpc.sql 파일을 Supabase SQL Editor에서 실행하세요.")
+            if "linkus_legal_match_legal_chunks" in error_msg or "does not exist" in error_msg.lower():
+                print(f"[경고] linkus_legal_match_legal_chunks RPC 함수가 없습니다. SQL 스크립트를 실행하세요: {error_msg}")
+                print("[팁] backend/scripts/create_linkus_legal_match_legal_chunks_rpc.sql 파일을 Supabase SQL Editor에서 실행하세요.")
             else:
                 print(f"[경고] legal 벡터 검색 실패: {error_msg}")
             return []
@@ -833,7 +819,7 @@ class SupabaseVectorStore:
         bucket_name 파라미터는 무시되고 항상 legal-sources 버킷을 사용합니다.
         
         Args:
-            external_id: 파일 ID (legal_chunks.external_id 또는 related_cases.id)
+            external_id: 파일 ID (linkus_legal_legal_chunks.external_id 또는 related_cases.id)
             source_type: 소스 타입 ('law' | 'manual' | 'case' | 'standard_contract')
             expires_in: URL 만료 시간 (초, Public URL에서는 사용하지 않지만 호환성을 위해 유지)
             bucket_name: 버킷 이름 (무시됨, 항상 legal-sources 사용)
@@ -907,51 +893,74 @@ class SupabaseVectorStore:
         boost_factor: float = 1.5
     ) -> List[Dict[str, Any]]:
         """
-        계약서 내부 청크 검색 (벡터 코사인 유사도)
-        
-        Args:
-            contract_id: 계약서 ID (doc_id)
-            query_embedding: 쿼리 임베딩 벡터
-            top_k: 반환할 최대 개수
-            filters: 필터 (예: {"article_number": 5})
-            boost_article: 가점을 줄 조항 번호 (issue 기반 boosting)
-            boost_factor: 가점 배율 (기본값: 1.5)
-        
-        Returns:
-            [{
-                id: str,
-                contract_id: str,
-                article_number: int,
-                paragraph_index: int (optional),
-                content: str,
-                chunk_index: int,
-                metadata: Dict,
-                score: float (similarity, boosting 적용)
-            }]
+        계약서 내부 청크 검색. DB/RPC 기반 (linkus_legal_match_contract_chunks) 우선,
+        RPC 미지원 시에만 Python 전수 계산 fallback.
         """
         self._ensure_initialized()
-        
+
+        article_filter = filters.get("article_number") if filters else None
         try:
-            # 필터 조건 구성
-            query = self.sb.table("contract_chunks")\
+            rpc_result = self.sb.rpc(
+                "linkus_legal_match_contract_chunks",
+                {
+                    "contract_id_param": contract_id,
+                    "query_embedding": query_embedding,
+                    "match_threshold": 0.5,
+                    "match_count": top_k,
+                    "article_number_filter": article_filter,
+                    "boost_article": boost_article,
+                    "boost_factor": boost_factor,
+                },
+            ).execute()
+            if rpc_result.data is not None:
+                return [
+                    {
+                        "id": row.get("id"),
+                        "contract_id": row.get("contract_id"),
+                        "article_number": row.get("article_number"),
+                        "paragraph_index": row.get("paragraph_index"),
+                        "content": row.get("content", ""),
+                        "chunk_index": row.get("chunk_index", 0),
+                        "metadata": row.get("metadata", {}),
+                        "score": row.get("similarity", 0.0),
+                    }
+                    for row in rpc_result.data
+                ]
+        except Exception as rpc_err:
+            if "does not exist" not in str(rpc_err).lower() and "linkus_legal_match_contract_chunks" not in str(rpc_err):
+                print(f"[경고] contract_chunks RPC 실패, fallback 사용: {rpc_err}")
+        # Fallback: Python 전수 계산
+        return self._search_similar_contract_chunks_fallback(
+            contract_id=contract_id,
+            query_embedding=query_embedding,
+            top_k=top_k,
+            filters=filters,
+            boost_article=boost_article,
+            boost_factor=boost_factor,
+        )
+
+    def _search_similar_contract_chunks_fallback(
+        self,
+        contract_id: str,
+        query_embedding: List[float],
+        top_k: int = 5,
+        filters: Optional[Dict[str, Any]] = None,
+        boost_article: Optional[int] = None,
+        boost_factor: float = 1.5,
+    ) -> List[Dict[str, Any]]:
+        """계약서 청크 검색 Python fallback (RPC 미사용 시)."""
+        try:
+            query = self.sb.table("linkus_legal_contract_chunks")\
                 .select("id, contract_id, article_number, paragraph_index, content, chunk_index, metadata, embedding")\
                 .eq("contract_id", contract_id)
-            
-            # article_number 필터
             if filters and "article_number" in filters:
                 query = query.eq("article_number", filters["article_number"])
-            
-            # 모든 청크 조회
             result = query.limit(1000).execute()
-            
             if not result.data:
                 return []
-            
-            # 벡터 유사도 계산
+
             import numpy as np
             import json
-            
-            # query_embedding을 numpy 배열로 변환
             try:
                 if isinstance(query_embedding, str):
                     try:
@@ -960,54 +969,33 @@ class SupabaseVectorStore:
                         try:
                             import ast
                             query_embedding = ast.literal_eval(query_embedding)
-                        except:
-                            print(f"[경고] 쿼리 임베딩 파싱 실패")
+                        except Exception:
                             return []
-                
                 if not isinstance(query_embedding, (list, np.ndarray)):
-                    print(f"[경고] 쿼리 임베딩이 리스트가 아닙니다: {type(query_embedding)}")
                     return []
-                
                 query_vec = np.array(query_embedding, dtype=np.float32)
-                
                 if len(query_vec) == 0:
-                    print(f"[경고] 쿼리 임베딩이 비어있습니다.")
                     return []
-                
-            except Exception as e:
-                print(f"[경고] 쿼리 임베딩 변환 실패: {str(e)}")
+            except Exception:
                 return []
-            
-            # 각 청크와의 유사도 계산
+
             results = []
             for chunk in result.data:
                 if not chunk.get("embedding"):
                     continue
-                
                 try:
-                    chunk_embedding = chunk["embedding"]
-                    if isinstance(chunk_embedding, str):
-                        chunk_embedding = json.loads(chunk_embedding)
-                    
-                    chunk_vec = np.array(chunk_embedding, dtype=np.float32)
-                    
-                    # 코사인 유사도 계산
+                    emb = chunk["embedding"]
+                    if isinstance(emb, str):
+                        emb = json.loads(emb)
+                    chunk_vec = np.array(emb, dtype=np.float32)
                     dot_product = np.dot(query_vec, chunk_vec)
                     norm_query = np.linalg.norm(query_vec)
                     norm_chunk = np.linalg.norm(chunk_vec)
-                    
                     if norm_query == 0 or norm_chunk == 0:
                         continue
-                    
                     similarity = float(dot_product / (norm_query * norm_chunk))
-                    
-                    # Issue 기반 boosting: 같은 조항이면 가점
-                    if boost_article is not None:
-                        chunk_article = chunk.get("article_number")
-                        if chunk_article == boost_article:
-                            similarity *= boost_factor
-                    
-                    # 최소 유사도 임계값 (0.5)
+                    if boost_article is not None and chunk.get("article_number") == boost_article:
+                        similarity *= boost_factor
                     if similarity > 0.5:
                         results.append({
                             "id": chunk.get("id"),
@@ -1017,121 +1005,15 @@ class SupabaseVectorStore:
                             "content": chunk.get("content", ""),
                             "chunk_index": chunk.get("chunk_index", 0),
                             "metadata": chunk.get("metadata", {}),
-                            "score": similarity
+                            "score": similarity,
                         })
-                
-                except Exception as e:
-                    print(f"[경고] 청크 유사도 계산 실패: {str(e)}")
+                except Exception:
                     continue
-            
-            # 유사도 순 정렬
             results.sort(key=lambda x: x["score"], reverse=True)
-            
             return results[:top_k]
-        
         except Exception as e:
-            error_msg = str(e)
-            # 테이블이 없는 경우 재시도
-            if "Could not find the table" in error_msg or "PGRST205" in error_msg:
-                print(f"[경고] contract_chunks 테이블을 찾을 수 없습니다. 스키마 캐시 갱신 중...")
-                self._reinitialize_client()
-                try:
-                    # 재시도
-                    query = self.sb.table("contract_chunks")\
-                        .select("id, contract_id, article_number, paragraph_index, content, chunk_index, metadata, embedding")\
-                        .eq("contract_id", contract_id)
-                    
-                    if filters and "article_number" in filters:
-                        query = query.eq("article_number", filters["article_number"])
-                    
-                    result = query.limit(1000).execute()
-                    
-                    if not result.data:
-                        return []
-                    
-                    # 벡터 유사도 계산 (위의 로직과 동일)
-                    import numpy as np
-                    import json
-                    
-                    try:
-                        if isinstance(query_embedding, str):
-                            try:
-                                query_embedding = json.loads(query_embedding)
-                            except json.JSONDecodeError:
-                                try:
-                                    import ast
-                                    query_embedding = ast.literal_eval(query_embedding)
-                                except:
-                                    print(f"[경고] 쿼리 임베딩 파싱 실패")
-                                    return []
-                        
-                        if not isinstance(query_embedding, (list, np.ndarray)):
-                            print(f"[경고] 쿼리 임베딩이 리스트가 아닙니다: {type(query_embedding)}")
-                            return []
-                        
-                        query_vec = np.array(query_embedding, dtype=np.float32)
-                        
-                        if len(query_vec) == 0:
-                            print(f"[경고] 쿼리 임베딩이 비어있습니다.")
-                            return []
-                        
-                    except Exception as e2:
-                        print(f"[경고] 쿼리 임베딩 변환 실패: {str(e2)}")
-                        return []
-                    
-                    results = []
-                    for chunk in result.data:
-                        if not chunk.get("embedding"):
-                            continue
-                        
-                        try:
-                            chunk_embedding = chunk["embedding"]
-                            if isinstance(chunk_embedding, str):
-                                chunk_embedding = json.loads(chunk_embedding)
-                            
-                            chunk_vec = np.array(chunk_embedding, dtype=np.float32)
-                            
-                            dot_product = np.dot(query_vec, chunk_vec)
-                            norm_query = np.linalg.norm(query_vec)
-                            norm_chunk = np.linalg.norm(chunk_vec)
-                            
-                            if norm_query == 0 or norm_chunk == 0:
-                                continue
-                            
-                            similarity = float(dot_product / (norm_query * norm_chunk))
-                            
-                            if boost_article is not None:
-                                chunk_article = chunk.get("article_number")
-                                if chunk_article == boost_article:
-                                    similarity *= boost_factor
-                            
-                            if similarity > 0.5:
-                                results.append({
-                                    "id": chunk.get("id"),
-                                    "contract_id": chunk.get("contract_id"),
-                                    "article_number": chunk.get("article_number"),
-                                    "paragraph_index": chunk.get("paragraph_index"),
-                                    "content": chunk.get("content", ""),
-                                    "chunk_index": chunk.get("chunk_index", 0),
-                                    "metadata": chunk.get("metadata", {}),
-                                    "score": similarity
-                                })
-                        
-                        except Exception as e2:
-                            print(f"[경고] 청크 유사도 계산 실패: {str(e2)}")
-                            continue
-                    
-                    results.sort(key=lambda x: x["score"], reverse=True)
-                    return results[:top_k]
-                    
-                except Exception as e2:
-                    print(f"[경고] 계약서 청크 검색 재시도 실패: {str(e2)}")
-                    print(f"[해결] contract_chunks 테이블이 생성되어 있는지 확인하세요.")
-                    print(f"[해결] backend/scripts/create_contract_chunks_table.sql 파일을 Supabase SQL Editor에서 실행하세요.")
-                    return []
-            else:
-                print(f"[경고] 계약서 청크 검색 오류: {error_msg}")
-                return []
+            print(f"[경고] 계약서 청크 검색 fallback 오류: {e}")
+            return []
     
     def bulk_upsert_contract_chunks(
         self,
@@ -1159,7 +1041,7 @@ class SupabaseVectorStore:
         
         # 기존 청크 삭제 (contract_id 기준)
         try:
-            self.sb.table("contract_chunks")\
+            self.sb.table("linkus_legal_contract_chunks")\
                 .delete()\
                 .eq("contract_id", contract_id)\
                 .execute()
@@ -1168,12 +1050,12 @@ class SupabaseVectorStore:
             if "Could not find the table" in error_msg or "PGRST205" in error_msg:
                 self._reinitialize_client()
                 try:
-                    self.sb.table("contract_chunks")\
+                    self.sb.table("linkus_legal_contract_chunks")\
                         .delete()\
                         .eq("contract_id", contract_id)\
                         .execute()
                 except:
-                    print(f"[경고] contract_chunks 테이블이 없습니다. 먼저 SQL 스크립트를 실행하세요.")
+                    print(f"[경고] linkus_legal_contract_chunks 테이블이 없습니다. 먼저 SQL 스크립트를 실행하세요.")
                     return
             else:
                 print(f"[경고] 기존 청크 삭제 실패: {str(e)}")
@@ -1193,13 +1075,13 @@ class SupabaseVectorStore:
             })
         
         try:
-            self.sb.table("contract_chunks")\
+            self.sb.table("linkus_legal_contract_chunks")\
                 .insert(payload)\
                 .execute()
         except Exception as e:
             error_msg = str(e)
             if "Could not find the table" in error_msg or "PGRST205" in error_msg:
-                print(f"[경고] contract_chunks 테이블이 없습니다. 먼저 SQL 스크립트를 실행하세요.")
+                print(f"[경고] linkus_legal_contract_chunks 테이블이 없습니다. 먼저 SQL 스크립트를 실행하세요.")
                 print(f"[해결] backend/scripts/create_contract_chunks_table.sql 파일을 Supabase SQL Editor에서 실행하세요.")
             else:
                 raise Exception(f"계약서 청크 저장 실패: {str(e)}")

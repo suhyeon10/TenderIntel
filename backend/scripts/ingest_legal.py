@@ -1,6 +1,13 @@
 """
-법률 문서 인덱싱 스크립트
-backend/data/legal/ 하위의 모든 파일을 legal_chunks 테이블에 인덱싱
+[DEPRECATED] 법률 문서 인덱싱 스크립트
+
+이 스크립트는 더 이상 사용하지 않습니다.
+단일 진입점으로 통일된 인덱싱은 아래 스크립트를 사용하세요:
+
+    python -m scripts.index_contracts_from_data [--upload-to-storage] [--folder FOLDER] [--files ...]
+
+- external_id, metadata 스키마, upsert 규칙은 index_contracts_from_data + legal_indexing_utils 에서 통일됩니다.
+- backend/data/legal/ 하위의 모든 파일을 legal_chunks 테이블에 인덱싱
 """
 
 import sys
@@ -183,10 +190,14 @@ def process_file(
 
 
 def main():
-    """메인 함수"""
+    """메인 함수 (deprecated: 단일 진입점으로 index_contracts_from_data 사용)"""
     print("=" * 60)
-    print("법률 문서 인덱싱 시작")
+    print("[DEPRECATED] ingest_legal.py 는 더 이상 사용하지 않습니다.")
+    print("아래 명령으로 통합 인덱싱을 실행하세요:")
+    print("  python -m scripts.index_contracts_from_data")
+    print("  (옵션: --upload-to-storage, --folder, --files, --pattern)")
     print("=" * 60)
+    sys.exit(1)
     
     # 초기화
     print("\n[초기화] 컴포넌트 로딩 중...")

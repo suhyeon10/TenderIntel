@@ -6,7 +6,7 @@
 
 ---
 
-## 1. contract_chunks 테이블
+## 1. linkus_legal_contract_chunks 테이블
 
 **저장 시점**: 텍스트 추출 직후, 분석 전
 
@@ -14,7 +14,7 @@
 
 **저장 데이터**:
 ```sql
-INSERT INTO contract_chunks (
+INSERT INTO linkus_legal_contract_chunks (
     contract_id,           -- doc_id (UUID 문자열)
     article_number,        -- 조 번호 (INTEGER)
     paragraph_index,       -- 문단 인덱스 (INTEGER, nullable)
@@ -35,7 +35,7 @@ INSERT INTO contract_chunks (
 
 ---
 
-## 2. contract_analyses 테이블
+## 2. linkus_legal_contract_analyses 테이블
 
 **저장 시점**: 분석 완료 후
 
@@ -43,7 +43,7 @@ INSERT INTO contract_chunks (
 
 **저장 데이터**:
 ```sql
-INSERT INTO contract_analyses (
+INSERT INTO linkus_legal_contract_analyses (
     id,                   -- UUID (PK, 자동 생성)
     doc_id,              -- 문서 고유 ID (TEXT)
     user_id,             -- 사용자 ID (UUID, nullable)
@@ -106,17 +106,17 @@ INSERT INTO contract_analyses (
 
 ---
 
-## 3. contract_issues 테이블
+## 3. linkus_legal_contract_issues 테이블
 
-**저장 시점**: contract_analyses 저장 직후
+**저장 시점**: linkus_legal_contract_analyses 저장 직후
 
 **저장 위치**: `backend/core/contract_storage.py` (라인 120-149)
 
 **저장 데이터**:
 ```sql
-INSERT INTO contract_issues (
+INSERT INTO linkus_legal_contract_issues (
     id,                      -- UUID (PK, 자동 생성)
-    contract_analysis_id,    -- FK → contract_analyses.id (UUID)
+    contract_analysis_id,    -- FK → linkus_legal_contract_analyses.id (UUID)
     issue_id,                -- 이슈 고유 ID (TEXT: 'issue-1' 등)
     category,                -- 이슈 카테고리 (TEXT: 'wage', 'working_hours' 등)
     severity,                -- 위험도 (TEXT: 'low' | 'medium' | 'high')
@@ -142,7 +142,7 @@ INSERT INTO contract_issues (
 ```
 [1] 텍스트 추출
     ↓
-[2] contract_chunks 저장 (청킹 + 임베딩)
+[2] linkus_legal_contract_chunks 저장 (청킹 + 임베딩)
     - contract_id = doc_id
     - article_number, content, embedding 등
     ↓
@@ -153,7 +153,7 @@ INSERT INTO contract_issues (
     - clauses를 프롬프트에 포함
     - LLM이 clause_id 기반으로 이슈 생성
     ↓
-[5] contract_analyses 저장
+[5] linkus_legal_contract_analyses 저장
     - doc_id, title, file_name
     - risk_score, risk_level, summary
     - contract_text (전체 원문)
@@ -161,7 +161,7 @@ INSERT INTO contract_issues (
     - highlighted_texts (JSONB)
     - retrieved_contexts (JSONB)
     ↓
-[6] contract_issues 저장
+[6] linkus_legal_contract_issues 저장
     - contract_analysis_id (FK)
     - issue_id, category, severity
     - original_text (clause.content)
@@ -172,22 +172,22 @@ INSERT INTO contract_issues (
 
 ## 🔍 주요 필드 설명
 
-### contract_analyses.file_name
+### linkus_legal_contract_analyses.file_name
 - **용도**: 캐시 조회용 (같은 파일명이면 DB에서 바로 불러오기)
 - **값**: `file.filename` 또는 `title`
 - **NOT NULL 제약**: 반드시 값이 있어야 함
 
-### contract_analyses.clauses
+### linkus_legal_contract_analyses.clauses
 - **용도**: 조항 목록 (프론트엔드에서 조항별 위험도 표시)
 - **형식**: JSONB 배열
 - **생성**: `extract_clauses()` → `attach_issue_info_to_clauses()`
 
-### contract_analyses.highlighted_texts
+### linkus_legal_contract_analyses.highlighted_texts
 - **용도**: 하이라이트된 텍스트 위치 정보
 - **형식**: JSONB 배열
 - **생성**: `build_highlights_from_clauses()` (clause 기준)
 
-### contract_issues.original_text
+### linkus_legal_contract_issues.original_text
 - **기존 방식**: LLM이 생성한 텍스트 (매칭 실패 가능)
 - **새 방식**: `clause.content` 직접 사용 (정확함)
 - **저장 로직**: `routes_legal_v2.py`에서 clause_id 기반으로 자동 채움
@@ -196,7 +196,7 @@ INSERT INTO contract_issues (
 
 ## 📝 실제 저장 예시
 
-### contract_analyses 예시:
+### linkus_legal_contract_analyses 예시:
 ```json
 {
     "id": "3f6f3624-85b2-4562-b0d2-9c19c11526f5",
@@ -231,7 +231,7 @@ INSERT INTO contract_issues (
 }
 ```
 
-### contract_issues 예시:
+### linkus_legal_contract_issues 예시:
 ```json
 {
     "id": "uuid-...",
@@ -247,7 +247,7 @@ INSERT INTO contract_issues (
 }
 ```
 
-### contract_chunks 예시:
+### linkus_legal_contract_chunks 예시:
 ```json
 {
     "id": "uuid-...",
@@ -270,13 +270,13 @@ INSERT INTO contract_issues (
 ## 🔗 테이블 간 관계
 
 ```
-contract_analyses (1)
+linkus_legal_contract_analyses (1)
     ├── doc_id (TEXT)
     │
-    ├── contract_chunks (N)  -- contract_id = doc_id
+    ├── linkus_legal_contract_chunks (N)  -- contract_id = doc_id
     │   └── 벡터 검색용 청크
     │
-    └── contract_issues (N)  -- contract_analysis_id = id
+    └── linkus_legal_contract_issues (N)  -- contract_analysis_id = id
         └── 위험 이슈 상세 정보
 ```
 
@@ -284,7 +284,7 @@ contract_analyses (1)
 
 ## ⚠️ 주의사항
 
-1. **contract_chunks**: 분석 전에 먼저 저장 (Dual RAG 검색에 필요)
+1. **linkus_legal_contract_chunks**: 분석 전에 먼저 저장 (Dual RAG 검색에 필요)
 2. **clauses**: JSONB로 저장 (별도 테이블 없음)
 3. **original_text**: 새 파이프라인에서는 clause.content 사용 (정확함)
 4. **file_name**: 캐시 조회용이므로 정확한 파일명 필요

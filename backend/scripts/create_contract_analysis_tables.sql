@@ -1,7 +1,7 @@
 -- 계약서 분석 결과 저장용 테이블 (가이드 스펙 준수)
 
 -- 1. 계약서 분석 결과 헤더
-CREATE TABLE IF NOT EXISTS public.contract_analyses (
+CREATE TABLE IF NOT EXISTS public.linkus_legal_contract_analyses (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     doc_id TEXT UNIQUE NOT NULL,
     title TEXT,
@@ -15,16 +15,16 @@ CREATE TABLE IF NOT EXISTS public.contract_analyses (
     created_at TIMESTAMPTZ DEFAULT now()
 );
 
-CREATE INDEX IF NOT EXISTS idx_contract_analyses_doc_id 
-    ON public.contract_analyses(doc_id);
+CREATE INDEX IF NOT EXISTS idx_linkus_legal_contract_analyses_doc_id 
+    ON public.linkus_legal_contract_analyses(doc_id);
 
-CREATE INDEX IF NOT EXISTS idx_contract_analyses_created_at 
-    ON public.contract_analyses(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_linkus_legal_contract_analyses_created_at 
+    ON public.linkus_legal_contract_analyses(created_at DESC);
 
 -- 2. 계약서 이슈(독소조항) 상세
-CREATE TABLE IF NOT EXISTS public.contract_issues (
+CREATE TABLE IF NOT EXISTS public.linkus_legal_contract_issues (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    contract_analysis_id UUID REFERENCES public.contract_analyses(id) ON DELETE CASCADE,
+    contract_analysis_id UUID REFERENCES public.linkus_legal_contract_analyses(id) ON DELETE CASCADE,
     issue_id TEXT,            -- 'issue-1', 'issue-2' 등
     category TEXT,            -- 'working_hours' 등
     severity TEXT,            -- 'low','medium','high'
@@ -36,14 +36,14 @@ CREATE TABLE IF NOT EXISTS public.contract_issues (
     created_at TIMESTAMPTZ DEFAULT now()
 );
 
-CREATE INDEX IF NOT EXISTS idx_contract_issues_analysis_id 
-    ON public.contract_issues(contract_analysis_id);
+CREATE INDEX IF NOT EXISTS idx_linkus_legal_contract_issues_analysis_id 
+    ON public.linkus_legal_contract_issues(contract_analysis_id);
 
-CREATE INDEX IF NOT EXISTS idx_contract_issues_category 
-    ON public.contract_issues(category);
+CREATE INDEX IF NOT EXISTS idx_linkus_legal_contract_issues_category 
+    ON public.linkus_legal_contract_issues(category);
 
 -- 3. 상황 분석 기록 (옵션)
-CREATE TABLE IF NOT EXISTS public.situation_analyses (
+CREATE TABLE IF NOT EXISTS public.linkus_legal_situation_analyses (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     situation TEXT,
     category TEXT,
@@ -60,9 +60,9 @@ CREATE TABLE IF NOT EXISTS public.situation_analyses (
     created_at TIMESTAMPTZ DEFAULT now()
 );
 
-CREATE INDEX IF NOT EXISTS idx_situation_analyses_category 
-    ON public.situation_analyses(category);
+CREATE INDEX IF NOT EXISTS idx_linkus_legal_situation_analyses_category 
+    ON public.linkus_legal_situation_analyses(category);
 
-CREATE INDEX IF NOT EXISTS idx_situation_analyses_created_at 
-    ON public.situation_analyses(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_linkus_legal_situation_analyses_created_at 
+    ON public.linkus_legal_situation_analyses(created_at DESC);
 

@@ -46,7 +46,7 @@ def main():
     # legal_chunks에서 데이터 조회 (file_path, metadata도 함께 조회)
     logger.info("\n[INFO] legal_chunks 테이블에서 데이터 조회 중...")
     try:
-        result = supabase.table("legal_chunks")\
+        result = supabase.table("linkus_legal_legal_chunks")\
             .select("title, source_type, external_id, file_path, metadata")\
             .range(0, 9999)\
             .execute()

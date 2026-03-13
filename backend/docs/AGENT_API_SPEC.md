@@ -14,7 +14,7 @@
 ### Form Data (multipart/form-data)
 - `mode` (필수): `"plain"` | `"contract"` | `"situation"`
 - `message` (필수): 사용자 질문 텍스트
-- `sessionId` (선택): 기존 `legal_chat_sessions.id` (없으면 새 세션 생성)
+- `sessionId` (선택): 기존 `linkus_legal_chat_sessions.id` (없으면 새 세션 생성)
 
 ---
 
@@ -138,7 +138,7 @@
 
 ```typescript
 {
-  sessionId: string;  // legal_chat_sessions.id
+  sessionId: string;  // linkus_legal_chat_sessions.id
   mode: "plain" | "contract" | "situation";
   
   // 분석 ID (해당 모드에서만 값 있음)

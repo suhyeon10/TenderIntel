@@ -46,14 +46,14 @@ def check_legal_storage():
         # 2. legal_chunks 테이블 확인
         print("\n[2] legal_chunks 테이블 (청크 및 임베딩)")
         print("-" * 60)
-        result = store.sb.table("legal_chunks")\
+        result = store.sb.table("linkus_legal_legal_chunks")\
             .select("id, legal_document_id, section_title, chunk_index, text")\
             .limit(5)\
             .execute()
         
         if result.data:
             print(f"총 청크 수 확인 중...")
-            count_result = store.sb.table("legal_chunks")\
+            count_result = store.sb.table("linkus_legal_legal_chunks")\
                 .select("id", count="exact")\
                 .execute()
             total_chunks = count_result.count if hasattr(count_result, 'count') else len(result.data)

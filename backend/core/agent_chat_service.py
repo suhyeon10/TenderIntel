@@ -164,6 +164,186 @@ class AgentChatService:
             answer = f"답변 생성 중 오류가 발생했습니다: {str(e)}"
             return answer, legal_chunks
     
+    # ----- 계약서 챗 단계형 파이프라인 (연구용 멀티에이전트 뼈대) -----
+
+    async def _run_issue_agent(
+        self,
+        query: str,
+        contract_analysis: Dict[str, Any],
+        selected_issue: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """이슈 에이전트: target_issue, target_clause, user_intent, needed_sources 구조화."""
+        analysis_summary = (contract_analysis or {}).get("summary", "")[:500]
+        out = {
+            "query": query,
+            "selected_issue": selected_issue,
+            "analysis_summary": analysis_summary,
+            "target_issue": None,
+            "target_clause": None,
+            "user_intent": None,
+            "needed_sources": ["law"],
+        }
+        if selected_issue:
+            out["target_issue"] = selected_issue.get("summary") or selected_issue.get("id") or ""
+            out["target_clause"] = selected_issue.get("clauseId") or selected_issue.get("clause_id") or ""
+
+        if not self.generator.disable_llm and query.strip():
+            try:
+                from core.agent_prompts import (
+                    ISSUE_AGENT_SYSTEM,
+                    build_issue_agent_prompt,
+                    parse_issue_agent_output,
+                )
+                prompt = build_issue_agent_prompt(
+                    query=query,
+                    selected_issue=selected_issue,
+                    selected_clause_id=out.get("target_clause"),
+                    analysis_summary=analysis_summary,
+                )
+                response_text = await self.generator.generate(
+                    prompt=prompt,
+                    system_role=ISSUE_AGENT_SYSTEM,
+                    max_output_tokens=256,
+                )
+                parsed = parse_issue_agent_output((response_text or "").strip())
+                if parsed:
+                    out["target_issue"] = out["target_issue"] or parsed.get("target_issue")
+                    out["target_clause"] = out["target_clause"] or parsed.get("target_clause")
+                    out["user_intent"] = parsed.get("user_intent")
+                    if parsed.get("needed_sources"):
+                        out["needed_sources"] = parsed["needed_sources"]
+                logger.info(
+                    f"[Agent Contract] _run_issue_agent: user_intent={out.get('user_intent')}, needed_sources={out.get('needed_sources')}"
+                )
+            except Exception as e:
+                logger.warning(f"[Agent Contract] _run_issue_agent LLM fallback: {e}")
+        return out
+
+    async def _run_retrieval_agent(
+        self,
+        query: str,
+        contract_analysis: Dict[str, Any],
+        issue_agent_output: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """검색 에이전트: 이슈 에이전트 출력 기반으로 법령/가이드 RAG 검색."""
+        selected_issue = issue_agent_output.get("selected_issue")
+        search_query = f"{query} {issue_agent_output.get('analysis_summary', '')}"
+        if selected_issue:
+            issue_summary = str(selected_issue.get("summary", ""))
+            issue_text = str(selected_issue.get("originalText", ""))
+            issue_category = str(selected_issue.get("category", ""))
+            search_query = f"{query} {issue_summary[:150]} {issue_text[:200]} {issue_category}".strip()
+        else:
+            user_intent = issue_agent_output.get("user_intent")
+            target_issue = issue_agent_output.get("target_issue")
+            if user_intent or target_issue:
+                search_query = " ".join(filter(None, [query, user_intent, target_issue]))[:500]
+        legal_chunks = await self.legal_service._search_legal_chunks(
+            query=search_query,
+            top_k=5,
+            category=None,
+            ensure_diversity=True,
+        )
+        return {"legal_chunks": legal_chunks, "retrieved_source_count": len(legal_chunks)}
+
+    async def _run_draft_agent(
+        self,
+        query: str,
+        contract_analysis: Dict[str, Any],
+        retrieval_result: Dict[str, Any],
+        selected_issue: Optional[Dict[str, Any]] = None,
+        history_messages: Optional[List[Dict[str, Any]]] = None,
+    ) -> str:
+        """드래프트 에이전트: 프롬프트 구성 + LLM 호출."""
+        from core.agent_prompts import build_agent_contract_prompt
+
+        legal_chunks = retrieval_result.get("legal_chunks") or []
+        prompt = build_agent_contract_prompt(
+            query=query,
+            contract_analysis=contract_analysis,
+            legal_chunks=legal_chunks,
+            selected_issue=selected_issue,
+            history_messages=history_messages or [],
+        )
+        prompt_length = len(prompt)
+        logger.info(
+            f"[Agent Contract] _run_draft_agent: prompt 길이={prompt_length}자, legal_chunks={len(legal_chunks)}"
+        )
+        if self.generator.disable_llm:
+            return f"LLM 분석이 비활성화되어 있습니다. RAG 검색 결과는 {len(legal_chunks)}개 발견되었습니다."
+        try:
+            from config import settings
+
+            llm_start_time = time.time()
+            if settings.use_ollama:
+                response_text = await self.generator.generate(
+                    prompt=prompt,
+                    system_role="너는 유능한 법률 AI야. 한국어로만 답변해주세요.",
+                )
+            elif settings.use_groq:
+                from llm_api import ask_groq_with_messages
+
+                messages = [
+                    {"role": "system", "content": "너는 유능한 법률 AI야. 한국어로만 답변해주세요."},
+                    {"role": "user", "content": prompt},
+                ]
+                response_text = ask_groq_with_messages(
+                    messages=messages,
+                    temperature=settings.llm_temperature,
+                    model=settings.groq_model,
+                )
+            else:
+                response_text = await self.generator.generate(
+                    prompt=prompt,
+                    system_role="너는 유능한 법률 AI야. 한국어로만 답변해주세요.",
+                )
+            llm_elapsed = time.time() - llm_start_time
+            logger.info(f"[Agent Contract] 답변 생성 완료: 길이={len(response_text)}자, LLM={llm_elapsed:.2f}초")
+            return response_text.strip()
+        except Exception as e:
+            logger.error(f"[Agent Contract] 답변 생성 실패: {str(e)}", exc_info=True)
+            return f"답변 생성 중 오류가 발생했습니다: {str(e)}"
+
+    async def _run_light_verifier(
+        self,
+        draft_answer: str,
+        query: str,
+        retrieval_result: Optional[Dict[str, Any]] = None,
+    ) -> tuple[str, str]:
+        """경량 검증기: supported | weak_support | unsupported. 약한 경우 보수적 문장 추가."""
+        status = "skipped"
+        if self.generator.disable_llm or not (query.strip() and draft_answer.strip()):
+            return draft_answer, status
+        try:
+            from core.agent_prompts import (
+                VERIFIER_SYSTEM,
+                build_verifier_prompt,
+                parse_verifier_output,
+            )
+            sources = (retrieval_result or {}).get("legal_chunks", [])
+            def _title(c):
+                return c.get("title", "") if isinstance(c, dict) else getattr(c, "title", "")
+            def _stype(c):
+                return c.get("source_type", "") if isinstance(c, dict) else getattr(c, "source_type", "")
+            sources_summary = "\n".join(f"- {_stype(c)}: {_title(c)}" for c in sources[:5])
+            prompt = build_verifier_prompt(query=query, draft_answer=draft_answer, sources_summary=sources_summary)
+            response_text = await self.generator.generate(
+                prompt=prompt,
+                system_role=VERIFIER_SYSTEM,
+                max_output_tokens=128,
+            )
+            parsed = parse_verifier_output((response_text or "").strip())
+            if parsed and parsed.get("status") in ("supported", "weak_support", "unsupported"):
+                status = parsed["status"]
+                logger.info(f"[Agent Contract] _run_light_verifier: status={status}")
+                if status in ("weak_support", "unsupported"):
+                    disclaimer = "\n\n※ 위 답변은 제시된 자료만으로는 완전히 뒷받침되지 않을 수 있으니, 중요 결정 전 전문가 상담을 권합니다."
+                    if disclaimer.strip() not in draft_answer:
+                        return draft_answer + disclaimer, status
+        except Exception as e:
+            logger.warning(f"[Agent Contract] _run_light_verifier: {e}")
+        return draft_answer, status
+
     async def chat_contract(
         self,
         query: str,
@@ -173,109 +353,39 @@ class AgentChatService:
         history_messages: Optional[List[Dict[str, Any]]] = None,
     ) -> str:
         """
-        Contract 모드: 계약서 분석 결과 기반 챗 (마크다운 형식)
-        
-        Args:
-            query: 사용자 질문
-            contract_analysis: 계약서 분석 결과
-            legal_chunks: RAG 검색 결과 (없으면 자동 검색)
-            history_messages: 대화 히스토리
-        
-        Returns:
-            마크다운 형식 답변
+        Contract 모드: 계약서 분석 결과 기반 챗 (마크다운 형식).
+        내부 단계: issue_agent → retrieval_agent → draft_agent → light_verifier.
         """
-        # RAG 검색 (legal_chunks가 없으면 자동 검색)
-        if not legal_chunks:
-            # 계약서 분석 요약을 기반으로 검색
-            search_query = f"{query} {contract_analysis.get('summary', '')[:200]}"
-            if selected_issue:
-                issue_summary = str(selected_issue.get('summary', ''))
-                issue_text = str(selected_issue.get('originalText', ''))
-                issue_category = str(selected_issue.get('category', ''))
-                search_query = f"{query} {issue_summary[:150]} {issue_text[:200]} {issue_category}".strip()
-            legal_chunks = await self.legal_service._search_legal_chunks(
-                query=search_query,
-                top_k=5,
-                category=None,
-                ensure_diversity=True,
-            )
-        
-        # 프롬프트 구성
-        from core.agent_prompts import build_agent_contract_prompt
-        prompt = build_agent_contract_prompt(
+        # 1) 이슈 에이전트 (스텁)
+        issue_agent_output = await self._run_issue_agent(
             query=query,
             contract_analysis=contract_analysis,
-            legal_chunks=legal_chunks,
             selected_issue=selected_issue,
-            history_messages=history_messages or [],
         )
-        
-        # 프롬프트 길이 로깅 (성능 분석용)
-        prompt_length = len(prompt)
-        estimated_tokens = prompt_length // 2.5
-        logger.info(
-            f"[Agent Contract] 프롬프트 구성 완료: "
-            f"길이={prompt_length}자, 추정 토큰={int(estimated_tokens)}토큰, "
-            f"legal_chunks={len(legal_chunks)}"
+        # 2) 검색 에이전트 (legal_chunks가 이미 있으면 재사용)
+        if legal_chunks:
+            retrieval_result = {"legal_chunks": legal_chunks, "retrieved_source_count": len(legal_chunks)}
+        else:
+            retrieval_result = await self._run_retrieval_agent(
+                query=query,
+                contract_analysis=contract_analysis,
+                issue_agent_output=issue_agent_output,
+            )
+        # 3) 드래프트 에이전트
+        draft = await self._run_draft_agent(
+            query=query,
+            contract_analysis=contract_analysis,
+            retrieval_result=retrieval_result,
+            selected_issue=selected_issue,
+            history_messages=history_messages,
         )
-        
-        # LLM 호출
-        if self.generator.disable_llm:
-            return f"LLM 분석이 비활성화되어 있습니다. RAG 검색 결과는 {len(legal_chunks)}개 발견되었습니다."
-        
-        try:
-            from config import settings
-            # LLM 호출 시간 측정 시작
-            llm_start_time = time.time()
-            
-            # LLM Provider에 따라 분기 처리
-            if settings.use_ollama:
-                # Ollama 사용
-                response_text = await self.generator.generate(
-                    prompt=prompt,
-                    system_role="너는 유능한 법률 AI야. 한국어로만 답변해주세요."
-                )
-                llm_elapsed = time.time() - llm_start_time
-                logger.info(
-                    f"[Agent Contract] 답변 생성 완료: "
-                    f"길이={len(response_text)}자, LLM 호출 시간={llm_elapsed:.2f}초"
-                )
-                return response_text.strip()
-            elif settings.use_groq:
-                # Groq 사용
-                from llm_api import ask_groq_with_messages
-                
-                messages = [
-                    {"role": "system", "content": "너는 유능한 법률 AI야. 한국어로만 답변해주세요."},
-                    {"role": "user", "content": prompt}
-                ]
-                
-                response_text = ask_groq_with_messages(
-                    messages=messages,
-                    temperature=settings.llm_temperature,
-                    model=settings.groq_model
-                )
-                llm_elapsed = time.time() - llm_start_time
-                logger.info(
-                    f"[Agent Contract] 답변 생성 완료: "
-                    f"길이={len(response_text)}자, LLM 호출 시간={llm_elapsed:.2f}초"
-                )
-                return response_text.strip()
-            else:
-                # 기본값: generator 사용 (Ollama로 fallback)
-                response_text = await self.generator.generate(
-                    prompt=prompt,
-                    system_role="너는 유능한 법률 AI야. 한국어로만 답변해주세요."
-                )
-                llm_elapsed = time.time() - llm_start_time
-                logger.info(
-                    f"[Agent Contract] 답변 생성 완료: "
-                    f"길이={len(response_text)}자, LLM 호출 시간={llm_elapsed:.2f}초"
-                )
-                return response_text.strip()
-        except Exception as e:
-            logger.error(f"[Agent Contract] 답변 생성 실패: {str(e)}", exc_info=True)
-            return f"답변 생성 중 오류가 발생했습니다: {str(e)}"
+        # 4) 경량 검증기 (스텁)
+        answer, _ = await self._run_light_verifier(
+            draft_answer=draft,
+            query=query,
+            retrieval_result=retrieval_result,
+        )
+        return answer
     
     async def chat_situation(
         self,

@@ -199,7 +199,7 @@ def convert_legal_issue_to_contract_issue_v2(
 async def legal_chat_agent(
     mode: LegalChatMode = Form(..., description="plain | contract | situation"),
     message: str = Form(..., description="사용자 질문 텍스트"),
-    session_id: Optional[str] = Form(None, alias="sessionId", description="기존 legal_chat_sessions.id"),
+    session_id: Optional[str] = Form(None, alias="sessionId", description="기존 linkus_legal_chat_sessions.id"),
     contract_analysis_id: Optional[str] = Form(None, alias="contractAnalysisId"),
     selected_issue_id: Optional[str] = Form(None, alias="selectedIssueId"),
     selected_clause_id: Optional[str] = Form(None, alias="selectedClauseId"),
@@ -1072,7 +1072,7 @@ async def _extract_cases_from_chunks(
                 from config import settings
                 from supabase import create_client
                 sb = create_client(settings.supabase_url, settings.supabase_key)
-                result = sb.table("legal_chunks")\
+                result = sb.table("linkus_legal_legal_chunks")\
                     .select("metadata")\
                     .eq("external_id", external_id)\
                     .eq("source_type", "case")\
