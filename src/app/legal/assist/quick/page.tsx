@@ -577,6 +577,12 @@ export default function QuickAssistPage() {
   const [isLoadingContractList, setIsLoadingContractList] = useState(false)
   const situationListLoadedRef = useRef(false)
   const contractListLoadedRef = useRef(false)
+
+  const clearSituationContextState = useCallback(() => {
+    setSituationAnalysis(null)
+    setSituationContext(null)
+    setSelectedSituationPreset(null)
+  }, [])
   
 
   // localStorage 및 DB에서 대화 내역 로드
@@ -755,7 +761,14 @@ export default function QuickAssistPage() {
                 workPeriod: parsed.workPeriod,
                 socialInsurance: parsed.socialInsurance,
               })
-              
+              if (parsed.situationAnalysisId) {
+                setCurrentContext({
+                  type: 'situation',
+                  id: parsed.situationAnalysisId,
+                  label: parsed.summary?.substring(0, 30) || '상황 분석',
+                })
+              }
+
               // 자동으로 대화 세션 생성
               // DB에서 이미 저장된 메시지가 있는지 확인
               let dbMessages: ChatMessage[] = []
@@ -861,6 +874,11 @@ export default function QuickAssistPage() {
             organizations: analysis.organizations,
           }
           setSituationAnalysis(convertedAnalysis)
+          setCurrentContext({
+            type: 'situation',
+            id: contextId,
+            label: analysis.analysis?.summary?.substring(0, 30) || '상황 분석',
+          })
 
           // 새 세션 생성
           const { getAuthHeaders } = await import('@/apis/legal.service')
@@ -1527,6 +1545,12 @@ export default function QuickAssistPage() {
       // selectedConversationId는 API 응답 후에 설정됨
     }
 
+    const shouldStartFreshPlainSession =
+      currentContext.type === 'none' &&
+      currentSession.messages.some(
+        (message) => message.context_type && message.context_type !== 'none'
+      )
+
     try {
       let assistantMessage: ChatMessage
       
@@ -1640,7 +1664,7 @@ export default function QuickAssistPage() {
         })
       }
       // 상황 분석 결과가 있으면 chatWithContractV2 사용 (컨텍스트 포함)
-      else if (situationAnalysis && situationContext) {
+      else if (situationAnalysis && situationContext && currentContext.type === 'situation' && !currentContext.id) {
         // 법적 관점 내용을 컨텍스트로 변환 (findings 사용)
         const legalContext = (situationAnalysis.findings || [])
           .map((finding: any, index: number) => {
@@ -1950,7 +1974,9 @@ export default function QuickAssistPage() {
           const chatResult = await chatWithAgent({
             mode: 'plain',
             message: messageToSend,
-            ...(selectedConversationId && chatSessionId ? { sessionId: chatSessionId } : {}),
+            ...(!shouldStartFreshPlainSession && selectedConversationId && chatSessionId
+              ? { sessionId: chatSessionId }
+              : {}),
           }, userId)
           
           // 세션 ID 업데이트
@@ -2234,8 +2260,7 @@ export default function QuickAssistPage() {
     setIsAnalyzing(false) // 분석 상태 초기화 (다른 세션의 상태가 유지되지 않도록)
     // 새 대화를 시작할 때는 상황 분석 결과도 초기화
     // (URL 파라미터에서 온 경우는 페이지 로드 시 다시 설정됨)
-    setSituationAnalysis(null)
-    setSituationContext(null)
+    clearSituationContextState()
     setSelectedFile(null) // 파일도 초기화
   }
 
@@ -3141,7 +3166,12 @@ export default function QuickAssistPage() {
                     {currentContext.label}
                   </span>
                   <button
-                    onClick={() => setCurrentContext({ type: 'none', id: null })}
+                    onClick={() => {
+                      if (currentContext.type === 'situation') {
+                        clearSituationContextState()
+                      }
+                      setCurrentContext({ type: 'none', id: null })
+                    }}
                     className="ml-auto text-slate-400 hover:text-slate-600 transition-colors"
                   >
                     <X className="w-3 h-3" />
