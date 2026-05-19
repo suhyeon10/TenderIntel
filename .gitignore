@@ -49,3 +49,4 @@ backend/data/
 
 # zip files
 *.zip
+venv/
